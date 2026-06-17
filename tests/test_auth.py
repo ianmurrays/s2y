@@ -1,0 +1,172 @@
+"""Auth tests — the pure header normalizer and Spotify scope/redirect wiring."""
+
+from __future__ import annotations
+
+from s2y.auth import spotify_pkce
+from s2y.auth.ytmusic_auth import normalize_headers
+from s2y.config import Config
+
+FIREFOX_RAW = """Host: music.youtube.com
+Cookie: VISITOR_INFO1=abc; SID=xyz
+Authorization: SAPISIDHASH 1234_hash
+X-Goog-AuthUser: 0"""
+
+CHROME_CURL = r"""curl 'https://music.youtube.com/youtubei/v1/browse' \
+  -H 'authority: music.youtube.com' \
+  -H 'cookie: VISITOR_INFO1=abc; SID=xyz' \
+  -H 'authorization: SAPISIDHASH 1234_hash' \
+  -b 'extra=cookie' \
+  --compressed"""
+
+
+def test_firefox_headers_pass_through():
+    out = normalize_headers(FIREFOX_RAW)
+    assert out == FIREFOX_RAW.strip()
+    assert "Cookie: VISITOR_INFO1=abc" in out
+
+
+def test_chrome_curl_is_parsed():
+    out = normalize_headers(CHROME_CURL)
+    lines = out.splitlines()
+    assert "authority: music.youtube.com" in lines
+    assert "cookie: VISITOR_INFO1=abc; SID=xyz" in lines
+    assert "authorization: SAPISIDHASH 1234_hash" in lines
+
+
+def test_chrome_curl_without_explicit_cookie_header_uses_b_flag():
+    curl = r"""curl 'https://x' -H 'authorization: AB' -b 'SID=only_cookie' --compressed"""
+    out = normalize_headers(curl)
+    assert "Cookie: SID=only_cookie" in out
+    assert "authorization: AB" in out
+
+
+def test_spotify_scopes_cover_read_and_write():
+    scopes = set(spotify_pkce.SCOPES)
+    assert {"playlist-modify-private", "user-library-modify",
+            "user-library-read", "playlist-read-private"} <= scopes
+
+
+def test_effective_redirect_defaults_to_loopback_literal():
+    cfg = Config()
+    cfg.spotify.redirect_port = 9090
+    # 127.0.0.1 literal, not "localhost" (which Spotify rejects).
+    assert cfg.spotify.effective_redirect_uri == "http://127.0.0.1:9090/callback"
+
+
+def test_effective_redirect_honors_explicit_override():
+    cfg = Config()
+    cfg.spotify.redirect_uri = "https://host.tailnet.ts.net/callback"
+    assert cfg.spotify.effective_redirect_uri == "https://host.tailnet.ts.net/callback"
+
+
+def test_redirect_uri_round_trips_through_config(tmp_path):
+    cfg = Config()
+    cfg.spotify.redirect_uri = "https://host.tailnet.ts.net/callback"
+    cfg.spotify.redirect_port = 8899
+    path = tmp_path / "config.toml"
+    cfg.save(path)
+    loaded = Config.load(path)
+    assert loaded.spotify.redirect_uri == "https://host.tailnet.ts.net/callback"
+    assert loaded.spotify.redirect_port == 8899
+
+
+def test_build_auth_manager_uses_effective_uri(tmp_path):
+    from s2y.config import Paths
+
+    cfg = Config()
+    cfg.spotify.client_id = "abc"
+    cfg.spotify.redirect_uri = "https://host.tailnet.ts.net/callback"
+    paths = Paths(config_dir=tmp_path / "c", data_dir=tmp_path / "d")
+    auth = spotify_pkce.build_auth_manager(cfg, paths)
+    assert auth.redirect_uri == "https://host.tailnet.ts.net/callback"
+
+
+def test_capture_code_returns_code_from_redirect():
+    import http.client
+    import socket
+    from concurrent.futures import ThreadPoolExecutor
+
+    from s2y.auth.spotify_pkce import _capture_code
+
+    # Find a free port, then hand it to the catcher.
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_capture_code, port, timeout=10.0)
+        # Retry until the catcher's server is bound, then send the redirect.
+        for _ in range(100):
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+                conn.request("GET", "/callback?code=THE_CODE&state=x")
+                conn.getresponse().read()
+                conn.close()
+                break
+            except OSError:
+                import time
+
+                time.sleep(0.05)
+        assert future.result(timeout=10) == "THE_CODE"
+
+
+def test_capture_code_raises_on_oauth_error():
+    import http.client
+    import socket
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import pytest
+
+    from s2y.auth.spotify_pkce import _capture_code
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_capture_code, port, timeout=10.0)
+        for _ in range(100):
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+                conn.request("GET", "/callback?error=access_denied")
+                conn.getresponse().read()
+                conn.close()
+                break
+            except OSError:
+                time.sleep(0.05)
+        with pytest.raises(RuntimeError, match="access_denied"):
+            future.result(timeout=10)
+
+
+def test_bind_error_messages_are_actionable():
+    import errno as _errno
+
+    from s2y.auth.spotify_pkce import _bind_error
+
+    eacces = _bind_error(443, OSError(_errno.EACCES, "Permission denied"))
+    assert "Permission denied" in str(eacces) and "443" in str(eacces)
+
+    inuse = _bind_error(8888, OSError(_errno.EADDRINUSE, "in use"))
+    assert "already in use" in str(inuse)
+
+    other = _bind_error(8888, OSError(_errno.EINVAL, "bad"))
+    assert "Could not open" in str(other)
+
+
+def test_capture_code_times_out_cleanly():
+    import socket
+
+    import pytest
+
+    from s2y.auth.spotify_pkce import _capture_code
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    with pytest.raises(RuntimeError, match="Timed out"):
+        _capture_code(port, timeout=0.5)

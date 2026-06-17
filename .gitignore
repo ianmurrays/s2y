@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# uv / venv
+.venv/
+
+# Secrets & local state — NEVER commit these
+*.token.json
+spotify-token.json
+ytmusic-browser.json
+ytmusic-oauth.json
+browser.json
+oauth.json
+config.toml
+*.db
+*.sqlite3
+logs/
+*.log
+
+# OS
+.DS_Store
