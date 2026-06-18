@@ -34,7 +34,14 @@ class DashboardScreen(Screen):
         last = repo.last_run()
         quarantined = repo.count_unresolved_quarantine()
         collections = repo.list_collections()
-        when = "never" if last is None else f"{last['started_at']} ({last['status']})"
+        if last is None:
+            when = "never"
+        elif last["status"] in ("running", "aborted", "error"):
+            # A previous sync didn't finish cleanly. Re-running picks up where it
+            # left off (cached matches + dedup against what already landed).
+            when = f"{last['started_at']} — interrupted; run Sync to resume"
+        else:
+            when = f"{last['started_at']} ({last['status']})"
         lines = [
             "[b]s2y[/b] — Spotify → YouTube Music",
             "",

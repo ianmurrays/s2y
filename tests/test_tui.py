@@ -62,7 +62,7 @@ class FakeEngine:
         self.q = MatchResult(qsrc, MatchOutcome.QUARANTINE, YtCandidate("vq", "Weirdish", "Nob"),
                              MatchMethod.FUZZY, 0.4, reason="low_conf")
 
-    def build_plan(self, on_event=lambda e: None):
+    def build_plan(self, on_event=lambda e: None, *, persist_matches=False):
         on_event(CollectionStarted("Chill", CollectionKind.PLAYLIST, 2))
         on_event(TrackMatched(self.match))
         on_event(TrackMatched(self.q))

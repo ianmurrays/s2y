@@ -12,11 +12,12 @@ from ...core.events import (
     Advanced,
     CollectionSkipped,
     CollectionStarted,
+    DedupDegraded,
     OpApplied,
     PhaseStarted,
     TrackMatched,
 )
-from ...core.models import CollectionKind, MatchOutcome, OpKind
+from ...core.models import CollectionKind, MatchMethod, MatchOutcome, OpKind
 from .. import log_bridge
 from ..messages import ApplyDone, EngineEvent, LogMessage, PlanReady, WorkerFailed
 from ..threads import run_detached
@@ -47,6 +48,7 @@ class SyncScreen(Screen):
         self._coll_kind: CollectionKind | None = None  # active collection kind
         self._total = 0       # tracks in the active collection
         self._matched = 0     # tracks resolved so far in it
+        self._cached = 0      # of those, how many came from the cache (resume signal)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -92,7 +94,11 @@ class SyncScreen(Screen):
         try:
             # Resolve (and lazily build) the engine INSIDE the thread — building it
             # opens the DB and the API clients, which would block the UI thread.
-            plan = await run_detached(lambda: self.app.engine().build_plan(self._emit))
+            plan = await run_detached(
+                lambda: self.app.engine().build_plan(
+                    self._emit, persist_matches=not self.dry_run
+                )
+            )
         except Exception as exc:  # noqa: BLE001
             self.post_message(WorkerFailed("plan", str(exc)))
             return
@@ -117,15 +123,25 @@ class SyncScreen(Screen):
             self._coll_kind = event.kind
             self._total = event.source_count
             self._matched = 0
+            self._cached = 0
             self.query_one("#phase", Static).update(
                 f"Planning: {event.name} ({event.source_count} tracks)"
             )
         elif isinstance(event, CollectionSkipped):
             self.query_one("#phase", Static).update(f"Unchanged: {event.name}")
+        elif isinstance(event, DedupDegraded):
+            self.query_one("#log", RichLog).write(
+                f"⚠ {event.name}: live YouTube check failed — resuming from saved "
+                f"state. {event.detail}"
+            )
         elif isinstance(event, TrackMatched):
             self._matched += 1
+            if event.result.method is MatchMethod.CACHED:
+                self._cached += 1
+            # A high cached count means we're resuming, not starting from scratch.
+            extra = f" · {self._cached} from cache" if self._cached else ""
             self.query_one("#phase", Static).update(
-                f"Planning: {self._coll_name} ({self._matched}/{self._total})"
+                f"Planning: {self._coll_name} ({self._matched}/{self._total}{extra})"
             )
             self._add_row(event.result)
         elif isinstance(event, PhaseStarted) and event.phase == "apply":
@@ -185,9 +201,18 @@ class SyncScreen(Screen):
         )
 
     def on_worker_failed(self, message: WorkerFailed) -> None:
-        self.query_one("#phase", Static).update(
-            f"[red]Error in {message.where}:[/] {message.detail}"
-        )
+        # A signed-out YouTube session is the common mid-sync failure. Progress is
+        # already saved (matches + landed adds), so steer the user to reconnect and
+        # re-run — which resumes — rather than showing a raw error dump.
+        if "signed out" in message.detail.lower():
+            self.query_one("#phase", Static).update(
+                "[yellow]YouTube signed out — progress saved.[/] Reconnect in "
+                "Settings, then run Sync again to resume where it left off."
+            )
+        else:
+            self.query_one("#phase", Static).update(
+                f"[red]Error in {message.where}:[/] {message.detail}"
+            )
 
     # ----- controls --------------------------------------------------------- #
     def action_apply(self) -> None:

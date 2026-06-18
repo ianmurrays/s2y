@@ -20,6 +20,7 @@ from . import matching, policy
 from .events import (
     CollectionSkipped,
     CollectionStarted,
+    DedupDegraded,
     EventSink,
     PhaseFinished,
     PhaseStarted,
@@ -52,6 +53,26 @@ def signature(ids: list[str]) -> str:
     """Order-independent fingerprint of a set of ids (for change detection)."""
     joined = "\n".join(sorted(i for i in ids if i))
     return hashlib.sha1(joined.encode("utf-8")).hexdigest()
+
+
+def _live_dedup(read, name: str, on_event: EventSink) -> set[str]:
+    """Run a live YouTube dedup read, degrading to an empty set (NOT an abort) when
+    it fails.
+
+    A still/again signed-out session is the most common mid-sync failure; without
+    this guard its ``ServiceError`` would propagate out of ``build_plan`` and take
+    down the *entire* re-run — the exact "I reset it but it starts over" symptom.
+    Falling back to an empty live set is safe: dedup unions it with the persisted
+    membership ledger, and re-proposed adds are no-ops (``add_playlist_items`` uses
+    ``duplicates=False``; ``like_song`` is idempotent). Core must not import the
+    services layer's ``ServiceError``, so we catch broadly around just this one port
+    call (the planner already orchestrates port I/O)."""
+    try:
+        return read()
+    except Exception as exc:  # noqa: BLE001 — a broken YT read must not abort the plan
+        log.warning("live YT dedup read failed for %r: %s — using persisted state", name, exc)
+        on_event(DedupDegraded(name, str(exc)))
+        return set()
 
 
 def _resolve(source: SongInfo, repo: Repository, ytmusic: YtMusicTarget) -> MatchResult | None:
@@ -190,11 +211,18 @@ def _plan_playlists(plan, spotify, ytmusic, repo, config, on_event, stop=_NEVER_
             continue
         tracks = spotify.playlist_tracks(pl.id)
         on_event(CollectionStarted(pl.name, CollectionKind.PLAYLIST, len(tracks)))
-        present = (
-            ytmusic.playlist_video_ids(row.yt_playlist_id)
+        # Dedup against what we durably recorded as landed (membership) UNIONed with
+        # a live read of the YT playlist. The live read is guarded so a signed-out
+        # session degrades to the persisted set instead of aborting the whole plan.
+        persisted = repo.yt_present_video_ids(row.id) if row else set()
+        live = (
+            _live_dedup(
+                lambda: ytmusic.playlist_video_ids(row.yt_playlist_id), pl.name, on_event
+            )
             if row and row.yt_playlist_id
             else set()
         )
+        present = persisted | live
         _plan_track_collection(
             plan, name=pl.name, kind=CollectionKind.PLAYLIST, key=pl.id,
             spotify_playlist_id=pl.id, sig=pl.snapshot_id or "",
@@ -214,10 +242,12 @@ def _plan_liked_songs(plan, spotify, ytmusic, repo, on_event, stop=_NEVER_STOP) 
         plan.skipped += len(liked)
         return
     on_event(CollectionStarted("Liked Songs", CollectionKind.LIKED_SONGS, len(liked)))
+    persisted = repo.yt_present_video_ids(row.id) if row else set()
+    live = _live_dedup(lambda: ytmusic.liked_video_ids(), "Liked Songs", on_event)
     _plan_track_collection(
         plan, name="Liked Songs", kind=CollectionKind.LIKED_SONGS, key="liked_songs",
         spotify_playlist_id=None, sig=sig, sources=liked,
-        present=ytmusic.liked_video_ids(), op_kind=OpKind.LIKE_SONG,
+        present=persisted | live, op_kind=OpKind.LIKE_SONG,
         emit_create=False, repo=repo, ytmusic=ytmusic, on_event=on_event, stop=stop,
     )
 

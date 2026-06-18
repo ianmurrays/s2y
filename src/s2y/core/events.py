@@ -44,6 +44,15 @@ class CollectionSkipped:
 
 
 @dataclass(frozen=True)
+class DedupDegraded:
+    """A live YouTube dedup read failed (e.g. session signed out); planning fell
+    back to the locally-persisted membership ledger instead of aborting the run."""
+
+    name: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class TrackMatched:
     """One source track was resolved (or quarantined) during planning."""
 
@@ -76,6 +85,7 @@ Event = (
     | PhaseFinished
     | CollectionStarted
     | CollectionSkipped
+    | DedupDegraded
     | TrackMatched
     | OpApplied
     | Advanced

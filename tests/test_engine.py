@@ -9,6 +9,7 @@ import pytest
 
 from s2y.config import Config
 from s2y.core.engine import Engine
+from s2y.core.events import DedupDegraded
 from s2y.core.matching import normalize_artist, normalize_title
 from s2y.core.models import (
     CollectionKind,
@@ -360,3 +361,116 @@ def test_apply_stops_when_signaled_and_retries_next_run(repo, config):
     add_ids = [op.video_id for op in plan2.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
     assert "yv2" in add_ids   # the add we never reached is retried
     assert "yv1" not in add_ids  # already present, not re-added
+
+
+# --------------------------------------------------------------------------- #
+# Resumability: durable membership ledger + guarded dedup + incremental matching
+# --------------------------------------------------------------------------- #
+def test_membership_recorded_on_add(repo, config):
+    """Each successful add is durably recorded (present_yt + setVideoId)."""
+    spotify, yt = make_world()
+    eng = Engine(spotify, yt, repo, config, sleep=NO_SLEEP)
+    eng.apply_plan(eng.build_plan())
+
+    chill = repo.get_collection_by_spotify_id("sp1")
+    assert repo.yt_present_video_ids(chill.id) == {"yv1", "yv2"}
+    t1 = repo.get_track_by_spotify_uri("spotify:track:1")
+    m = repo.get_membership(chill.id, t1.id)
+    assert m["present_yt"] == 1
+    assert m["yt_set_video_id"] == "set-yv1"  # captured from add_playlist_items
+
+    # Liked Songs membership is recorded too (rating state has no setVideoId).
+    liked = repo.get_collection_by_kind("liked_songs")
+    assert repo.yt_present_video_ids(liked.id) == {"yv3"}
+
+
+def test_resume_dedups_via_membership_when_live_read_empty(repo, config):
+    """The core data-loss regression: a track that already landed must not be
+    re-added even when the live YT read comes back empty (e.g. a just-reauthed or
+    flaky session). Dedup is driven by the persisted ledger, not just live YT."""
+    spotify, yt = make_world(fail={"yv2"})  # yv1 lands, yv2 fails -> sig withheld
+    Engine(spotify, yt, repo, config, sleep=NO_SLEEP).apply_plan(
+        Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
+    )
+
+    # Simulate a live read that knows nothing (signed back in, cache cold).
+    yt.playlist_video_ids = lambda pid: set()
+    plan2 = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
+    add_ids = [op.video_id for op in plan2.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
+    assert "yv1" not in add_ids  # known-landed via membership — NOT re-added
+    assert "yv2" in add_ids      # genuinely missing — retried
+
+
+def test_live_dedup_failure_degrades_instead_of_aborting(repo, config):
+    """A signed-out live read must not take down the whole re-run; it degrades to
+    the persisted membership and emits DedupDegraded."""
+    spotify, yt = make_world()
+    eng = Engine(spotify, yt, repo, config, sleep=NO_SLEEP)
+    eng.apply_plan(eng.build_plan())  # full apply -> membership {yv1, yv2}
+
+    def boom(pid):
+        raise RuntimeError("signinendpoint: please sign in")
+
+    yt.playlist_video_ids = boom
+    spotify._playlists = [RemotePlaylist(id="sp1", name="Chill", count=2, snapshot_id="snap-2")]
+
+    events: list = []
+    plan2 = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan(events.append)
+    assert any(isinstance(e, DedupDegraded) for e in events)  # did not raise
+    add_ids = [op.video_id for op in plan2.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
+    assert add_ids == []  # persisted membership covers both tracks
+
+
+def test_matching_persisted_incrementally_avoids_research(repo, config):
+    """With persist_matches, resolutions are cached as they happen — so a crash
+    mid-matching keeps the work and the re-run does not re-search YouTube."""
+    spotify, yt = make_world()
+    # A real (non-dry) plan that never reaches apply_plan.
+    Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan(persist_matches=True)
+    assert repo.get_track_by_spotify_uri("spotify:track:1") is not None
+    assert repo.get_track_by_spotify_uri("spotify:track:2") is not None
+
+    yt.search_calls = 0
+    spotify._playlists = [RemotePlaylist(id="sp1", name="Chill", count=2, snapshot_id="snap-2")]
+    Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
+    assert yt.search_calls == 0  # everything resolved from the incrementally-built cache
+
+
+def test_dry_run_build_plan_opens_no_run(repo, config):
+    """A read-only plan (persist_matches=False, the default) opens no sync_run row
+    and writes no track_map — so dry runs never pollute resume state."""
+    spotify, yt = make_world()
+    Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
+    assert repo.last_run() is None
+    assert repo.get_track_by_spotify_uri("spotify:track:1") is None
+
+
+def test_run_status_reflects_outcome(repo, config):
+    # Clean apply -> ok.
+    spotify, yt = make_world()
+    eng = Engine(spotify, yt, repo, config, sleep=NO_SLEEP)
+    eng.apply_plan(eng.build_plan())
+    assert repo.last_run()["status"] == "ok"
+
+    # A failed op -> error.
+    repo2 = Repository(connect(":memory:"))
+    spotify, yt = make_world(fail={"yv2"})
+    eng = Engine(spotify, yt, repo2, config, sleep=NO_SLEEP)
+    eng.apply_plan(eng.build_plan())
+    assert repo2.last_run()["status"] == "error"
+
+    # A cooperative stop mid-apply -> aborted.
+    repo3 = Repository(connect(":memory:"))
+    spotify, yt = make_world()
+    stop = threading.Event()
+    orig_add = yt.add_playlist_items
+
+    def add_then_stop(pid, vids):
+        result = orig_add(pid, vids)
+        stop.set()
+        return result
+
+    yt.add_playlist_items = add_then_stop
+    eng = Engine(spotify, yt, repo3, config, sleep=NO_SLEEP, stop=stop)
+    eng.apply_plan(eng.build_plan())
+    assert repo3.last_run()["status"] == "aborted"
