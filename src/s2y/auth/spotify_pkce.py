@@ -59,8 +59,18 @@ def build_auth_manager(config: Config, paths: Paths) -> SpotifyPKCE:
 
 
 def build_client(config: Config, paths: Paths) -> spotipy.Spotify:
-    """A ready spotipy client (uses the cached token; refreshes as needed)."""
-    return spotipy.Spotify(auth_manager=build_auth_manager(config, paths))
+    """A ready spotipy client (uses the cached token; refreshes as needed).
+
+    A finite ``requests_timeout`` keeps a stuck socket from hanging the worker;
+    ``retries=0``/``status_retries=0`` hand all retry/backoff to our own
+    ``with_retry`` layer so we don't double-retry (and stay observable).
+    """
+    return spotipy.Spotify(
+        auth_manager=build_auth_manager(config, paths),
+        requests_timeout=config.sync.request_timeout,
+        retries=0,
+        status_retries=0,
+    )
 
 
 def authorize(

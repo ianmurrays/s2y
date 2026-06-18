@@ -19,6 +19,7 @@ import ytmusicapi
 from ytmusicapi import OAuthCredentials, YTMusic
 
 from ..config import Config, Paths, secure_existing
+from ..services.base import TimeoutSession
 
 _HEADER_RE = re.compile(r"(?:-H|--header)\s+(['\"])(.*?)\1", re.DOTALL)
 _COOKIE_RE = re.compile(r"(?:-b|--cookie)\s+(['\"])(.*?)\1", re.DOTALL)
@@ -74,13 +75,18 @@ def setup_oauth(config: Config, paths: Paths, *, open_browser: bool = False) -> 
 
 
 def build_client(config: Config, paths: Paths) -> YTMusic:
+    # A session with a default per-request timeout so a dead socket can't hang
+    # the worker forever (ytmusicapi sets no timeout of its own).
+    session = TimeoutSession(config.sync.request_timeout)
     if config.ytmusic.auth_mode == "oauth":
         creds = OAuthCredentials(
             client_id=config.ytmusic.oauth_client_id,
             client_secret=config.ytmusic.oauth_client_secret,
         )
-        return YTMusic(str(paths.ytmusic_oauth), oauth_credentials=creds)
-    return YTMusic(str(paths.ytmusic_browser))
+        return YTMusic(
+            str(paths.ytmusic_oauth), oauth_credentials=creds, requests_session=session
+        )
+    return YTMusic(str(paths.ytmusic_browser), requests_session=session)
 
 
 def has_credentials(config: Config, paths: Paths) -> bool:

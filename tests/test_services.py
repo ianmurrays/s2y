@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+import requests
+
+from s2y.services.base import ServiceError, is_transient
 from s2y.services.spotify import SpotifyClient
 from s2y.services.ytmusic import YTMusicClient
 
@@ -217,3 +223,105 @@ def test_yt_like_song_and_album():
     browse = c.like_album("Band", "Greatest")
     assert browse == "MPRE1"
     assert yt.rated_playlists == ["OLAK5"]
+
+
+# --------------------------------------------------------------------------- #
+# Robustness: timeouts + visible retries
+# --------------------------------------------------------------------------- #
+def test_timeout_session_injects_default_timeout(monkeypatch):
+    import requests
+
+    from s2y.services.base import TimeoutSession
+
+    seen: list[object] = []
+
+    def fake_request(self, method, url, **kwargs):
+        seen.append(kwargs.get("timeout"))
+        return "resp"
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+    sess = TimeoutSession(9.0)
+    sess.request("GET", "http://example")               # no timeout -> injected
+    sess.request("GET", "http://example", timeout=1.5)  # caller's value preserved
+    assert seen == [9.0, 1.5]
+
+
+def test_is_transient_classifies_errors():
+    from ytmusicapi.exceptions import YTMusicServerError
+
+    class WithStatus(Exception):
+        def __init__(self, status):
+            super().__init__("x")
+            self.http_status = status
+
+    assert is_transient(WithStatus(429)) is True       # rate limited
+    assert is_transient(WithStatus(503)) is True        # server error
+    assert is_transient(WithStatus(401)) is False       # auth — deterministic
+    assert is_transient(WithStatus(404)) is False
+    assert is_transient(requests.exceptions.Timeout()) is True
+    assert is_transient(requests.exceptions.ConnectionError()) is True
+    assert is_transient(YTMusicServerError("backend")) is True
+    assert is_transient(KeyError("twoColumnBrowseResultsRenderer")) is False
+    assert is_transient(RuntimeError("???")) is False
+
+
+def test_yt_call_retries_transient_errors_and_logs(caplog):
+    c = YTMusicClient(FakeYT(), sleep=NO_SLEEP)
+    state = {"n": 0}
+
+    def flaky():
+        state["n"] += 1
+        if state["n"] < 2:
+            raise requests.exceptions.ConnectionError("blip")  # transient
+        return "ok"
+
+    with caplog.at_level(logging.WARNING, logger="s2y.services.ytmusic"):
+        assert c._call(flaky, "search songs 'x'") == "ok"  # noqa: SLF001
+    assert state["n"] == 2  # retried once
+    assert any("search songs 'x'" in r.message for r in caplog.records)
+
+
+def test_spotify_call_retries_transient_errors_and_logs(caplog):
+    c = SpotifyClient(FakeSpotify(), sleep=NO_SLEEP)
+    state = {"n": 0}
+
+    def flaky():
+        state["n"] += 1
+        if state["n"] < 2:
+            raise requests.exceptions.ConnectionError("blip")  # transient
+        return "ok"
+
+    with caplog.at_level(logging.WARNING, logger="s2y.services.spotify"):
+        assert c._call(flaky, "liked songs") == "ok"  # noqa: SLF001
+    assert state["n"] == 2
+    assert any("liked songs" in r.message for r in caplog.records)
+
+
+def test_yt_call_fails_fast_on_non_transient_error():
+    c = YTMusicClient(FakeYT(), sleep=NO_SLEEP)
+    calls = {"n": 0}
+
+    def deterministic():
+        calls["n"] += 1
+        raise KeyError("nope")  # not transient -> must not retry
+
+    with pytest.raises(KeyError):
+        c._call(deterministic, "get liked songs")  # noqa: SLF001
+    assert calls["n"] == 1  # one attempt, no backoff storm
+
+
+def test_yt_call_translates_signed_out_into_service_error():
+    c = YTMusicClient(FakeYT(), sleep=NO_SLEEP)
+    calls = {"n": 0}
+
+    def signed_out():
+        calls["n"] += 1
+        # The real ytmusicapi parse failure embeds the logged-out response.
+        raise KeyError(
+            "Unable to find 'twoColumnBrowseResultsRenderer' ... 'signInEndpoint' ... "
+            "Sign in to listen to your liked tracks ..."
+        )
+
+    with pytest.raises(ServiceError, match="signed out"):
+        c._call(signed_out, "get liked songs")  # noqa: SLF001
+    assert calls["n"] == 1  # surfaced immediately, not retried for minutes

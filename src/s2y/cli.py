@@ -9,19 +9,35 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
+import os
 import sys
 
 from . import __version__
 from .config import Config, default_paths
 
 
-def _configure_logging(paths) -> None:
+def _configure_logging(paths, *, verbose: bool = False) -> None:
+    """Send logs to a rotating file only (never stdout — it would corrupt the TUI).
+
+    Level is INFO by default; ``--verbose`` or ``S2Y_LOG_LEVEL=DEBUG`` raises it to
+    DEBUG (which also enables the chatty per-search breadcrumbs).
+    """
     paths.ensure_dirs()
-    logging.basicConfig(
-        level=logging.INFO,
-        filename=str(paths.log_file),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    env_level = os.environ.get("S2Y_LOG_LEVEL", "").upper()
+    if verbose or env_level == "DEBUG":
+        level = logging.DEBUG
+    else:
+        level = getattr(logging, env_level, logging.INFO)
+    handler = logging.handlers.RotatingFileHandler(
+        str(paths.log_file), maxBytes=1_000_000, backupCount=3, encoding="utf-8"
     )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.setLevel(level)
+    for existing in list(root.handlers):  # idempotent if called more than once
+        root.removeHandler(existing)
+    root.addHandler(handler)
 
 
 def _run_headless_plan() -> int:
@@ -67,9 +83,15 @@ def main(argv: list[str] | None = None) -> int:
         "--plan", action="store_true",
         help="headless dry-run: print the sync plan and exit (no UI, no changes)",
     )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="verbose (DEBUG) logging to the log file",
+    )
     args = parser.parse_args(argv)
 
-    _configure_logging(default_paths())
+    paths = default_paths()
+    _configure_logging(paths, verbose=args.verbose)
+    logging.getLogger("s2y").info("s2y %s starting — logging to %s", __version__, paths.log_file)
 
     if args.plan:
         return _run_headless_plan()

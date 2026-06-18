@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from textual import on
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Static
+from textual.widgets import Footer, Header, Static
 
 
 class DashboardScreen(Screen):
@@ -21,11 +20,6 @@ class DashboardScreen(Screen):
         yield Header()
         with Vertical(id="dashboard"):
             yield Static(id="status")
-            with Horizontal(id="actions"):
-                yield Button("Dry run", id="dry", variant="primary")
-                yield Button("Sync now", id="sync", variant="success")
-                yield Button("Review quarantine", id="review")
-                yield Button("Settings", id="settings")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -47,7 +41,7 @@ class DashboardScreen(Screen):
             f"Collections:  {len(collections)} mapped",
             f"Quarantine:   {quarantined} awaiting review",
             "",
-            "Dry run shows the plan without changing anything. Sync applies it.",
+            "Keys:  [b]d[/b] dry-run · [b]s[/b] sync · [b]r[/b] review · [b]g[/b] settings · [b]q[/b] quit",
         ]
         self.query_one("#status", Static).update("\n".join(lines))
 
@@ -72,19 +66,3 @@ class DashboardScreen(Screen):
         from .sync import SyncScreen
 
         self.app.push_screen(SyncScreen(dry_run=dry_run))
-
-    @on(Button.Pressed, "#dry")
-    def _on_dry(self) -> None:
-        self.action_dry()
-
-    @on(Button.Pressed, "#sync")
-    def _on_sync(self) -> None:
-        self.action_sync()
-
-    @on(Button.Pressed, "#review")
-    def _on_review(self) -> None:
-        self.action_review()
-
-    @on(Button.Pressed, "#settings")
-    def _on_settings(self) -> None:
-        self.action_settings()

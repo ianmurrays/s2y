@@ -15,6 +15,7 @@ T = TypeVar("T")
 
 SleepFn = Callable[[float], None]
 RetryHook = Callable[[Exception, int, float], None]
+Retryable = Callable[[Exception], bool]
 
 
 def retry_after_seconds(exc: Exception) -> float | None:
@@ -39,22 +40,27 @@ def retry_after_seconds(exc: Exception) -> float | None:
 def with_retry(
     fn: Callable[[], T],
     *,
-    tries: int = 10,
+    tries: int = 6,
     base_sleep: float = 5.0,
-    max_sleep: float = 300.0,
+    max_sleep: float = 60.0,
     sleep: SleepFn = time.sleep,
     on_retry: RetryHook | None = None,
+    retryable: Retryable | None = None,
 ) -> T:
     """Call ``fn`` with exponential backoff. Honors ``Retry-After`` on 429s.
 
-    Re-raises the last exception once ``tries`` is exhausted.
+    Re-raises the last exception once ``tries`` is exhausted. ``retryable`` (when
+    given) decides whether a given exception is worth retrying at all — a
+    deterministic failure (bad auth, an unparseable "please sign in" page) just
+    fails again, so we re-raise it immediately instead of sleeping through the
+    whole backoff schedule. Default: retry everything.
     """
     delay = base_sleep
     for attempt in range(1, tries + 1):
         try:
             return fn()
         except Exception as exc:  # noqa: BLE001 — deliberately broad; we retry then re-raise
-            if attempt >= tries:
+            if attempt >= tries or (retryable is not None and not retryable(exc)):
                 raise
             wait = retry_after_seconds(exc)
             if wait is None:

@@ -61,6 +61,52 @@ def test_retry_after_seconds_ignores_non_429():
     assert retry_after_seconds(RuntimeError("x")) is None
 
 
+def test_with_retry_invokes_on_retry_hook_each_attempt():
+    events: list[tuple[int, float]] = []
+    state = {"n": 0}
+
+    def flaky():
+        state["n"] += 1
+        if state["n"] < 3:
+            raise RuntimeError("transient")
+        return "ok"
+
+    with_retry(
+        flaky, base_sleep=1.0, sleep=lambda _: None,
+        on_retry=lambda exc, attempt, wait: events.append((attempt, wait)),
+    )
+    assert events == [(1, 1.0), (2, 2.0)]  # attempt index + the backoff it waited
+
+
+def test_with_retry_on_retry_hook_reports_429_wait():
+    events: list[tuple[int, float]] = []
+    state = {"n": 0}
+
+    def flaky():
+        state["n"] += 1
+        if state["n"] == 1:
+            raise Fake429("2")
+        return "ok"
+
+    with_retry(
+        flaky, sleep=lambda _: None,
+        on_retry=lambda exc, attempt, wait: events.append((attempt, wait)),
+    )
+    assert events == [(1, 3.0)]  # 2s Retry-After + 1s cushion, surfaced to the hook
+
+
+def test_with_retry_default_tries_is_bounded():
+    calls = {"n": 0}
+
+    def always_fail():
+        calls["n"] += 1
+        raise RuntimeError("nope")
+
+    with pytest.raises(RuntimeError):
+        with_retry(always_fail, sleep=lambda _: None)
+    assert calls["n"] == 6  # the (lowered) interactive default
+
+
 def test_chunked():
     assert list(chunked([1, 2, 3, 4, 5], 2)) == [[1, 2], [3, 4], [5]]
     with pytest.raises(ValueError):

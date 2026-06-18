@@ -51,3 +51,12 @@ class AuthUrl(Message):
     def __init__(self, url: str) -> None:
         super().__init__()
         self.url = url
+
+
+class LogMessage(Message):
+    """One formatted log line forwarded from the ``logging`` system to the UI."""
+
+    def __init__(self, text: str, level: str = "info") -> None:
+        super().__init__()
+        self.text = text
+        self.level = level

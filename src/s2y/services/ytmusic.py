@@ -14,6 +14,7 @@ Notes on the unofficial API:
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -21,13 +22,31 @@ from ytmusicapi import LikeStatus
 
 from ..core.matching import _similarity, normalize_artist, normalize_title
 from ..core.models import RemotePlaylist, YtCandidate
-from .base import first_artist
+from .base import ServiceError, first_artist, is_transient
 from .ratelimit import SleepFn, with_retry
+
+log = logging.getLogger(__name__)
 
 # A big page size to fetch a whole collection in one call.
 _BIG = 5000
 # The synthetic "Liked Music" playlist isn't a real user playlist.
 _LIKED_MUSIC_IDS = {"LM", "LM2"}
+
+# Markers that mean YouTube Music handed us a logged-out "please sign in" page
+# (ytmusicapi then fails to parse it). Browser-header sessions expire, so this is
+# the most common real failure — surface it as actionable instead of a parse dump.
+_SIGNED_OUT_MARKERS = ("signinendpoint", "sign in to listen", "looking for what you")
+_SIGNED_OUT_MSG = (
+    "YouTube Music is signed out — it returned a 'Sign in' page instead of your "
+    "library. Reconnect it: re-run setup (or Settings) and paste fresh request "
+    "headers from a logged-in music.youtube.com tab. Browser-header sessions "
+    "expire after a while; OAuth is longer-lived if you prefer."
+)
+
+
+def _looks_signed_out(exc: Exception) -> bool:
+    s = str(exc).lower()
+    return any(marker in s for marker in _SIGNED_OUT_MARKERS)
 
 
 class YTMusicClient:
@@ -36,8 +55,21 @@ class YTMusicClient:
         self._sleep = sleep
         self._name_to_id: dict[str, str] | None = None  # playlist-name cache
 
-    def _call(self, fn):
-        return with_retry(fn, sleep=self._sleep)
+    def _call(self, fn, what: str = "YouTube Music request"):
+        def _on_retry(exc: Exception, attempt: int, wait: float) -> None:
+            log.warning("%s throttled/failed: %s — retry %d in %.0fs", what, exc, attempt, wait)
+
+        try:
+            return with_retry(
+                fn, sleep=self._sleep, on_retry=_on_retry, retryable=is_transient
+            )
+        except ServiceError:
+            raise
+        except Exception as exc:
+            if _looks_signed_out(exc):
+                log.error("YouTube Music auth failure on %s: signed out", what)
+                raise ServiceError(_SIGNED_OUT_MSG) from exc
+            raise
 
     # ----- verify ----------------------------------------------------------- #
     def verify(self) -> str:
@@ -62,15 +94,27 @@ class YTMusicClient:
         return out
 
     def playlist_video_ids(self, playlist_id: str) -> set[str]:
-        data = self._call(lambda: self._yt.get_playlist(playlist_id, limit=_BIG)) or {}
-        return {t["videoId"] for t in data.get("tracks", []) or [] if t.get("videoId")}
+        log.info("YouTube Music: reading existing items of playlist %s…", playlist_id)
+        data = self._call(
+            lambda: self._yt.get_playlist(playlist_id, limit=_BIG), "get playlist"
+        ) or {}
+        ids = {t["videoId"] for t in data.get("tracks", []) or [] if t.get("videoId")}
+        log.info("YouTube Music: playlist %s already has %d items", playlist_id, len(ids))
+        return ids
 
     def liked_video_ids(self) -> set[str]:
-        data = self._call(lambda: self._yt.get_liked_songs(limit=_BIG)) or {}
-        return {t["videoId"] for t in data.get("tracks", []) or [] if t.get("videoId")}
+        # This is the (often slow) "what do I already like on YT" fetch that runs
+        # right after the Spotify count is known — log around it so it doesn't look
+        # like a hang.
+        log.info("YouTube Music: reading your existing likes…")
+        data = self._call(lambda: self._yt.get_liked_songs(limit=_BIG), "get liked songs") or {}
+        ids = {t["videoId"] for t in data.get("tracks", []) or [] if t.get("videoId")}
+        log.info("YouTube Music: you already like %d songs there", len(ids))
+        return ids
 
     def library_album_keys(self) -> set[tuple[str, str]]:
-        raw = self._call(lambda: self._yt.get_library_albums(limit=_BIG)) or []
+        log.info("YouTube Music: reading your library albums…")
+        raw = self._call(lambda: self._yt.get_library_albums(limit=_BIG), "library albums") or []
         keys: set[tuple[str, str]] = set()
         for a in raw:
             title = a.get("title") or ""
@@ -80,18 +124,28 @@ class YTMusicClient:
 
     # ----- catalogue search ------------------------------------------------- #
     def search_songs(self, query: str, *, limit: int = 6) -> list[YtCandidate]:
-        raw = self._call(lambda: self._yt.search(query, filter="songs", limit=limit)) or []
+        log.debug("YouTube Music: search songs %r", query)
+        raw = self._call(
+            lambda: self._yt.search(query, filter="songs", limit=limit), f"search songs {query!r}"
+        ) or []
         return [c for c in (_candidate(r, is_song=True) for r in raw) if c]
 
     def search_videos(self, query: str, *, limit: int = 4) -> list[YtCandidate]:
-        raw = self._call(lambda: self._yt.search(query, filter="videos", limit=limit)) or []
+        log.debug("YouTube Music: search videos %r", query)
+        raw = self._call(
+            lambda: self._yt.search(query, filter="videos", limit=limit), f"search videos {query!r}"
+        ) or []
         return [c for c in (_candidate(r, is_song=False) for r in raw) if c]
 
     def album_candidates(
         self, artist: str, album: str, *, limit_albums: int = 3
     ) -> list[YtCandidate]:
+        log.debug("YouTube Music: album search %r by %r", album, artist)
         albums = (
-            self._call(lambda: self._yt.search(f"{album} {artist}", filter="albums", limit=limit_albums))
+            self._call(
+                lambda: self._yt.search(f"{album} {artist}", filter="albums", limit=limit_albums),
+                f"album search {album!r}",
+            )
             or []
         )
         out: list[YtCandidate] = []

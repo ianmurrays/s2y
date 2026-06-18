@@ -55,27 +55,31 @@ class Engine:
     # ----- applying --------------------------------------------------------- #
     def apply_plan(self, plan: SyncPlan, on_event: EventSink = null_sink) -> dict:
         on_event(PhaseStarted("apply", total=len(plan.ops)))
+        log.info("Applying %d operation(s)…", len(plan.ops))
 
         self._persist_matches(plan)
         self._persist_quarantine(plan)
 
         pacer = Pacer(self.config.sync.track_sleep, sleep=self._sleep)
         failures: dict[str, int] = defaultdict(int)
+        total = len(plan.ops)
         applied = failed = 0
-        for op in plan.ops:
+        for i, op in enumerate(plan.ops, 1):
             try:
                 self._apply_op(op)
                 applied += 1
+                log.info("applied %d/%d: %s", i, total, op.describe())
                 on_event(OpApplied(op, ok=True))
             except Exception as exc:  # noqa: BLE001 — one bad op must not abort the run
                 failed += 1
                 failures[op.collection_key] += 1
-                log.warning("apply failed: %s: %s", op.describe(), exc)
+                log.warning("apply failed %d/%d: %s: %s", i, total, op.describe(), exc)
                 on_event(OpApplied(op, ok=False, error=str(exc)))
             on_event(Advanced(1))
             pacer.wait()
 
         self._persist_signatures(plan, failures)
+        log.info("Apply finished: %d applied, %d failed", applied, failed)
         on_event(PhaseFinished("apply"))
         return {
             "applied": applied,

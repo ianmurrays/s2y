@@ -11,6 +11,7 @@ emit an "add" for anything not already on the YT side.
 from __future__ import annotations
 
 import hashlib
+import logging
 
 from ..config import Config
 from ..store.repository import Repository
@@ -38,6 +39,8 @@ from .models import (
     YtCandidate,
 )
 from .ports import SpotifySource, YtMusicTarget
+
+log = logging.getLogger(__name__)
 
 
 def signature(ids: list[str]) -> str:
@@ -85,7 +88,12 @@ def _plan_track_collection(
     on_event: EventSink,
 ) -> None:
     desired: list[tuple[str, SongInfo]] = []
-    for src in sources:
+    total = len(sources)
+    log.info("%s: matching %d track(s)…", name, total)
+    for i, src in enumerate(sources, 1):
+        # Logged BEFORE the (possibly slow/networked) resolve, so a stuck track is
+        # identifiable: the log shows "matching k/N: X" and then goes quiet on X.
+        log.info("matching %d/%d: %s — %s", i, total, src.title, src.artist)
         res = _resolve(src, repo, ytmusic)
         if res is None:
             plan.skipped += 1
@@ -126,6 +134,12 @@ def build_plan(
 ) -> SyncPlan:
     plan = SyncPlan()
     on_event(PhaseStarted("plan"))
+    log.info(
+        "Building plan (playlists=%s, liked_songs=%s, liked_albums=%s)",
+        config.collections.sync_playlists,
+        config.collections.sync_liked_songs,
+        config.collections.sync_liked_albums,
+    )
 
     if config.collections.sync_playlists:
         _plan_playlists(plan, spotify, ytmusic, repo, config, on_event)
@@ -140,6 +154,10 @@ def build_plan(
         "matched": len(plan.matches),
         "skipped": plan.skipped,
     }
+    log.info(
+        "Plan ready: %d actions, %d need review, %d unchanged",
+        len(plan.ops), len(plan.quarantine), plan.skipped,
+    )
     on_event(PhaseFinished("plan"))
     return plan
 
@@ -151,6 +169,7 @@ def _plan_playlists(plan, spotify, ytmusic, repo, config, on_event) -> None:
             continue
         row = repo.get_collection_by_spotify_id(pl.id)
         if row and pl.snapshot_id and row.spotify_snapshot_id == pl.snapshot_id:
+            log.info("Playlist %r unchanged since last run — skipping", pl.name)
             on_event(CollectionSkipped(pl.name, CollectionKind.PLAYLIST))
             plan.skipped += pl.count
             continue
@@ -175,6 +194,7 @@ def _plan_liked_songs(plan, spotify, ytmusic, repo, on_event) -> None:
     sig = signature([s.spotify_uri or "" for s in liked])
     row = repo.get_collection_by_kind("liked_songs")
     if row and row.spotify_snapshot_id == sig:
+        log.info("Liked Songs unchanged since last run — skipping")
         on_event(CollectionSkipped("Liked Songs", CollectionKind.LIKED_SONGS))
         plan.skipped += len(liked)
         return
@@ -192,6 +212,7 @@ def _plan_liked_albums(plan, spotify, ytmusic, repo, on_event) -> None:
     sig = signature([a.id for a in albums])
     row = repo.get_collection_by_kind("liked_albums")
     if row and row.spotify_snapshot_id == sig:
+        log.info("Liked Albums unchanged since last run — skipping")
         on_event(CollectionSkipped("Liked Albums", CollectionKind.LIKED_ALBUMS))
         plan.skipped += len(albums)
         return

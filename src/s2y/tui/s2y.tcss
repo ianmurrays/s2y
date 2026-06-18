@@ -30,13 +30,13 @@ Screen {
     height: auto;
 }
 
-#actions, #controls, #q_controls, #setup_controls, #settings_controls {
+#setup_controls, #settings_controls {
     height: auto;
     margin-top: 1;
 }
 
-#actions Button, #controls Button, #q_controls Button,
 #setup_controls Button, #settings_controls Button {
+    height: 3;
     margin: 0 1 0 0;
 }
 
@@ -49,6 +49,13 @@ Screen {
 #yt_headers {
     height: 6;
     margin-bottom: 1;
+}
+
+#log {
+    height: 10;
+    border: round $panel-darken-2;
+    margin-top: 1;
+    background: $panel-darken-1;
 }
 
 ProgressBar {

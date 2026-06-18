@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import json
 
-from textual import on
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Button, DataTable, Footer, Header, Static
+from textual.widgets import DataTable, Footer, Header, Static
 
 from ...core.matching import normalize_artist, normalize_title
 
@@ -29,14 +28,11 @@ class QuarantineScreen(Screen):
         yield Header()
         with Vertical(id="quarantine"):
             yield Static("Quarantine — your call on these tracks", id="q_title")
+            yield Static("[b]a[/b] accept · [b]s[/b] skip · [b]esc[/b] back", classes="help")
             table = DataTable(id="q_table")
             table.cursor_type = "row"
             table.add_columns("Track", "Artist", "Best YT match", "Conf")
             yield table
-            with Horizontal(id="q_controls"):
-                yield Button("Accept best", id="accept", variant="success")
-                yield Button("Skip", id="skip")
-                yield Button("Back", id="back")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -104,18 +100,6 @@ class QuarantineScreen(Screen):
 
     def action_back(self) -> None:
         self.app.pop_screen()
-
-    @on(Button.Pressed, "#accept")
-    def _on_accept(self) -> None:
-        self.action_accept()
-
-    @on(Button.Pressed, "#skip")
-    def _on_skip(self) -> None:
-        self.action_skip()
-
-    @on(Button.Pressed, "#back")
-    def _on_back(self) -> None:
-        self.action_back()
 
 
 def _best(row) -> dict | None:

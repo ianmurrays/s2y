@@ -81,6 +81,51 @@ def test_build_auth_manager_uses_effective_uri(tmp_path):
     assert auth.redirect_uri == "https://host.tailnet.ts.net/callback"
 
 
+def test_spotify_build_client_sets_timeout_and_disables_lib_retries(tmp_path):
+    from s2y.config import Paths
+
+    cfg = Config()
+    cfg.spotify.client_id = "abc"
+    cfg.sync.request_timeout = 12.0
+    paths = Paths(config_dir=tmp_path / "c", data_dir=tmp_path / "d")
+    client = spotify_pkce.build_client(cfg, paths)
+    # A finite timeout, and retries handed entirely to our with_retry layer.
+    assert client.requests_timeout == 12.0
+    assert client.retries == 0
+    assert client.status_retries == 0
+
+
+def test_ytmusic_build_client_passes_timeout_session(tmp_path, monkeypatch):
+    from s2y.auth import ytmusic_auth
+    from s2y.config import Paths
+    from s2y.services.base import TimeoutSession
+
+    captured: dict = {}
+
+    def fake_ytmusic(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return object()
+
+    # ytmusic_auth imports YTMusic into its own namespace, so patch it there.
+    monkeypatch.setattr(ytmusic_auth, "YTMusic", fake_ytmusic)
+    cfg = Config()
+    cfg.sync.request_timeout = 8.0
+    paths = Paths(config_dir=tmp_path / "c", data_dir=tmp_path / "d")
+    ytmusic_auth.build_client(cfg, paths)
+    session = captured["kwargs"]["requests_session"]
+    assert isinstance(session, TimeoutSession)
+    assert session.timeout == 8.0
+
+
+def test_request_timeout_round_trips_through_config(tmp_path):
+    cfg = Config()
+    cfg.sync.request_timeout = 22.5
+    path = tmp_path / "config.toml"
+    cfg.save(path)
+    assert Config.load(path).sync.request_timeout == 22.5
+
+
 def test_capture_code_returns_code_from_redirect():
     import http.client
     import socket

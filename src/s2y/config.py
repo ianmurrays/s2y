@@ -133,6 +133,9 @@ class SyncConfig:
     track_sleep: float = 0.1
     circuit_breaker_pct: int = 30
     dry_run: bool = False
+    # Per-request network timeout (seconds) for the Spotify/YouTube Music clients,
+    # so a stuck socket raises (and our retry layer surfaces it) instead of hanging.
+    request_timeout: float = 15.0
 
 
 @dataclass

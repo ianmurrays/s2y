@@ -114,8 +114,65 @@ async def test_dry_run_builds_plan_without_apply():
                          and app.screen._plan is not None)
         assert ok
         assert len(app.screen._plan.ops) == 1
-        # Dry run never enables Apply.
-        assert app.screen.query_one("#apply").disabled is True
+        # Dry run never enables Apply: the action is a no-op.
+        assert app.screen._apply_ready is False
+        await pilot.press("a")  # no-op in dry run
+        await pilot.pause()
+        assert app.screen.apply_stats is None
+
+
+@pytest.mark.asyncio
+async def test_sync_screen_tracks_per_track_progress():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")  # dry run
+        await _wait(pilot, lambda: isinstance(app.screen, SyncScreen)
+                    and app.screen._plan is not None)
+        # CollectionStarted set the total; each TrackMatched advanced the counter.
+        assert app.screen._total == 2
+        assert app.screen._matched == 2
+
+
+@pytest.mark.asyncio
+async def test_sync_table_shows_destination_and_action():
+    from textual.widgets import DataTable
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await _wait(pilot, lambda: isinstance(app.screen, SyncScreen)
+                    and app.screen._plan is not None)
+        table = app.screen.query_one("#rows", DataTable)
+        # Columns: Source, → YouTube Music, Where, Conf, Action
+        first = table.get_row_at(0)
+        assert first[2] == "Chill"            # Where = the collection it came from
+        assert first[4] == "add to playlist"  # an AUTO match into a playlist
+        actions = [table.get_row_at(r)[4] for r in range(table.row_count)]
+        assert "review" in actions            # the quarantined track is flagged
+
+
+@pytest.mark.asyncio
+async def test_sync_screen_log_panel_toggles_and_receives_messages():
+    from textual.widgets import RichLog
+
+    from s2y.tui.messages import LogMessage
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await _wait(pilot, lambda: isinstance(app.screen, SyncScreen))
+        rlog = app.screen.query_one("#log", RichLog)
+        assert rlog.display is False  # hidden by default
+        await pilot.press("l")  # toggle on
+        await pilot.pause()
+        assert rlog.display is True
+        before = len(rlog.lines)
+        app.screen.post_message(LogMessage("a streamed log line"))
+        grew = await _wait(pilot, lambda: len(rlog.lines) > before)
+        assert grew
 
 
 @pytest.mark.asyncio
@@ -126,8 +183,8 @@ async def test_sync_applies_plan():
         await pilot.press("s")  # sync now
         await _wait(pilot, lambda: isinstance(app.screen, SyncScreen)
                     and app.screen._plan is not None)
-        assert app.screen.query_one("#apply").disabled is False
-        await pilot.click("#apply")
+        assert app.screen._apply_ready is True
+        await pilot.press("a")
         applied = await _wait(pilot, lambda: app.screen.apply_stats is not None)
         assert applied
         assert app.screen.apply_stats["applied"] == 1
