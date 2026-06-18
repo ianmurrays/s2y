@@ -12,6 +12,7 @@ class DashboardScreen(Screen):
     BINDINGS = [
         ("d", "dry", "Dry run"),
         ("s", "sync", "Sync now"),
+        ("p", "playlists", "Playlists"),
         ("r", "review", "Review"),
         ("g", "settings", "Settings"),
     ]
@@ -41,7 +42,8 @@ class DashboardScreen(Screen):
             f"Collections:  {len(collections)} mapped",
             f"Quarantine:   {quarantined} awaiting review",
             "",
-            "Keys:  [b]d[/b] dry-run · [b]s[/b] sync · [b]r[/b] review · [b]g[/b] settings · [b]q[/b] quit",
+            "Keys:  [b]d[/b] dry-run · [b]s[/b] sync · [b]p[/b] playlists · "
+            "[b]r[/b] review · [b]g[/b] settings · [b]q[/b] quit",
         ]
         self.query_one("#status", Static).update("\n".join(lines))
 
@@ -51,6 +53,11 @@ class DashboardScreen(Screen):
 
     def action_sync(self) -> None:
         self._open_sync(dry_run=False)
+
+    def action_playlists(self) -> None:
+        from .playlists import PlaylistsScreen
+
+        self.app.push_screen(PlaylistsScreen())
 
     def action_review(self) -> None:
         from .review import QuarantineScreen

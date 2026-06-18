@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual.message import Message
 
 from ..core.events import Event
-from ..core.models import SyncPlan
+from ..core.models import RemotePlaylist, SyncPlan
 
 
 class EngineEvent(Message):
@@ -26,6 +26,14 @@ class ApplyDone(Message):
     def __init__(self, stats: dict) -> None:
         super().__init__()
         self.stats = stats
+
+
+class PlaylistsLoaded(Message):
+    """The user's Spotify playlists, fetched off-thread for the picker screen."""
+
+    def __init__(self, playlists: list[RemotePlaylist]) -> None:
+        super().__init__()
+        self.playlists = playlists
 
 
 class WorkerFailed(Message):

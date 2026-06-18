@@ -39,7 +39,11 @@ async def run_detached(fn: Callable[[], T]) -> T:
         try:
             result = fn()
         except BaseException as exc:  # noqa: BLE001 — relayed to the awaiter verbatim
-            loop.call_soon_threadsafe(_resolve, lambda: fut.set_exception(exc))
+            # Bind exc as a default arg so its value is captured now, on this
+            # thread. The lambda runs later on the loop thread, by which point the
+            # except block has implicitly `del`-ed the `exc` name — reading it then
+            # would race into a NameError and the future would never resolve.
+            loop.call_soon_threadsafe(_resolve, lambda exc=exc: fut.set_exception(exc))
         else:
             loop.call_soon_threadsafe(_resolve, lambda: fut.set_result(result))
 

@@ -6,6 +6,7 @@ import pathlib
 import tempfile
 
 import pytest
+from textual.widgets import Button, SelectionList, Static
 
 from s2y.config import Config, Paths
 from s2y.core.events import Advanced, CollectionStarted, OpApplied, PhaseStarted, TrackMatched
@@ -15,6 +16,7 @@ from s2y.core.models import (
     MatchOutcome,
     MatchResult,
     OpKind,
+    RemotePlaylist,
     SongInfo,
     SyncOp,
     SyncPlan,
@@ -22,14 +24,35 @@ from s2y.core.models import (
 )
 from s2y.tui import S2YApp
 from s2y.tui.screens.dashboard import DashboardScreen
+from s2y.tui.screens.playlists import PlaylistsScreen
 from s2y.tui.screens.review import QuarantineScreen
+from s2y.tui.screens.settings import SettingsScreen
 from s2y.tui.screens.setup import SetupScreen
 from s2y.tui.screens.sync import SyncScreen
 
 
+class _FakeSpotify:
+    """Stub Spotify source for the playlist picker — no network."""
+
+    def __init__(self, playlists=None):
+        self._playlists = playlists if playlists is not None else [
+            RemotePlaylist("sp1", "Chill", 2, "s1"),
+            RemotePlaylist("sp2", "Focus", 5, "s2"),
+        ]
+
+    def list_playlists(self):
+        return list(self._playlists)
+
+
+class _RaisingSpotify:
+    def list_playlists(self):
+        raise RuntimeError("boom")
+
+
 class FakeEngine:
-    def __init__(self, repo):
+    def __init__(self, repo, spotify=None):
         self.repo = repo
+        self.spotify = spotify if spotify is not None else _FakeSpotify()
         src = SongInfo("Song", "Artist", spotify_uri="spotify:track:1")
         self.match = MatchResult(src, MatchOutcome.AUTO, YtCandidate("v1", "Song", "Artist"),
                                  MatchMethod.META, 0.95)
@@ -244,3 +267,184 @@ async def test_quarantine_accept_writes_mapping():
         assert resolved
         row = app.repo.get_track_by_spotify_uri("spotify:track:2")
         assert row is not None and row.yt_video_id == "vq" and row.verified is True
+
+
+# --------------------------------------------------------------------------- #
+# Playlist picker
+# --------------------------------------------------------------------------- #
+async def _open_picker(pilot, app):
+    """Press 'p' from the dashboard and wait for the picker to finish loading."""
+    await pilot.press("p")
+    loaded = await _wait(
+        pilot, lambda: isinstance(app.screen, PlaylistsScreen) and app.screen._loaded
+    )
+    assert loaded
+    return app.screen.query_one("#pl_list", SelectionList)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_p_opens_and_loads_playlists():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sel = await _open_picker(pilot, app)
+        assert sel.option_count == 2
+
+
+@pytest.mark.asyncio
+async def test_prechecks_all_when_selection_empty():
+    # Default Config(): selected_playlists == [] and sync_playlists True => "all".
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sel = await _open_picker(pilot, app)
+        assert set(sel.selected) == {"sp1", "sp2"}
+
+
+@pytest.mark.asyncio
+async def test_prechecks_subset_when_selection_nonempty():
+    app = make_app()
+    app.config.collections.selected_playlists = ["sp2"]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sel = await _open_picker(pilot, app)
+        assert set(sel.selected) == {"sp2"}
+
+
+@pytest.mark.asyncio
+async def test_prechecks_none_when_playlists_disabled():
+    # sync_playlists False with empty selection must NOT pre-check all.
+    app = make_app()
+    app.config.collections.sync_playlists = False
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sel = await _open_picker(pilot, app)
+        assert set(sel.selected) == set()
+
+
+@pytest.mark.asyncio
+async def test_save_subset_writes_explicit_list_and_enables():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sel = await _open_picker(pilot, app)
+        sel.deselect_all()
+        sel.select("sp1")
+        await pilot.pause()
+        app.screen.query_one("#pl_save", Button).press()
+        await pilot.pause()
+        cols = app.config.collections
+        assert cols.sync_playlists is True
+        assert cols.selected_playlists == ["sp1"]
+        # Persisted to TOML and round-trips through the custom writer.
+        reloaded = Config.load(app.paths.config_file)
+        assert reloaded.collections.selected_playlists == ["sp1"]
+        assert reloaded.collections.sync_playlists is True
+
+
+@pytest.mark.asyncio
+async def test_save_none_checked_disables_playlists():
+    # The [] == all trap: zero checked must flip sync_playlists False, not mean "all".
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _open_picker(pilot, app)
+        app.screen.query_one("#pl_none", Button).press()
+        await pilot.pause()
+        app.screen.query_one("#pl_save", Button).press()
+        await pilot.pause()
+        cols = app.config.collections
+        assert cols.sync_playlists is False
+        assert cols.selected_playlists == []
+        reloaded = Config.load(app.paths.config_file)
+        assert reloaded.collections.sync_playlists is False
+
+
+@pytest.mark.asyncio
+async def test_select_all_button_checks_everything():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sel = await _open_picker(pilot, app)
+        app.screen.query_one("#pl_none", Button).press()
+        await pilot.pause()
+        assert set(sel.selected) == set()
+        app.screen.query_one("#pl_all", Button).press()
+        await pilot.pause()
+        assert set(sel.selected) == {"sp1", "sp2"}
+
+
+@pytest.mark.asyncio
+async def test_settings_button_opens_picker():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")  # settings
+        await _wait(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        app.screen.query_one("#choose_pl", Button).press()
+        opened = await _wait(pilot, lambda: isinstance(app.screen, PlaylistsScreen))
+        assert opened
+
+
+@pytest.mark.asyncio
+async def test_load_error_keeps_save_disabled():
+    app = make_app()
+    app._engine_factory = lambda: FakeEngine(app.repo, spotify=_RaisingSpotify())  # noqa: SLF001
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("p")
+        await _wait(pilot, lambda: isinstance(app.screen, PlaylistsScreen))
+        failed = await _wait(
+            pilot,
+            lambda: "Couldn't load"
+            in str(app.screen.query_one("#playlists_status", Static).render()),
+        )
+        assert failed
+        assert app.screen._loaded is False
+        assert app.screen.query_one("#pl_save", Button).disabled is True
+
+
+def test_playlists_summary_states():
+    from s2y.config import CollectionsConfig
+    from s2y.tui.screens.settings import _playlists_summary
+
+    assert "all" in _playlists_summary(
+        CollectionsConfig(sync_playlists=True, selected_playlists=[])
+    )
+    assert "none" in _playlists_summary(
+        CollectionsConfig(sync_playlists=False, selected_playlists=[])
+    )
+    assert "2 selected" in _playlists_summary(
+        CollectionsConfig(sync_playlists=True, selected_playlists=["a", "b"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_settings_summary_refreshes_after_picker():
+    # The summary in Settings must reflect a selection saved in the picker — i.e.
+    # on_screen_resume re-renders #pl_summary when the picker is popped.
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")  # settings
+        await _wait(pilot, lambda: isinstance(app.screen, SettingsScreen))
+
+        def summary() -> str:
+            return str(app.screen.query_one("#pl_summary", Static).render())
+
+        assert "all" in summary()  # default: [] + enabled
+
+        # Into the picker: uncheck everything, save, back out.
+        app.screen.query_one("#choose_pl", Button).press()
+        await _wait(
+            pilot, lambda: isinstance(app.screen, PlaylistsScreen) and app.screen._loaded
+        )
+        app.screen.query_one("#pl_none", Button).press()
+        await pilot.pause()
+        app.screen.query_one("#pl_save", Button).press()
+        await pilot.pause()
+        app.screen.query_one("#pl_back", Button).press()
+
+        await _wait(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        refreshed = await _wait(pilot, lambda: "none" in summary())
+        assert refreshed

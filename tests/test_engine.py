@@ -299,6 +299,22 @@ def test_selected_playlists_filter(repo, config):
     assert plan.ops == []
 
 
+def test_empty_selection_means_all_or_none_by_master_toggle(repo, config):
+    # An empty selected_playlists is interpreted by the sync_playlists toggle:
+    # enabled => sync ALL; disabled => sync NONE. This is what the picker relies
+    # on so that "0 checked" (saved as disabled+[]) never means "sync everything".
+    spotify, yt = make_world()
+    config.collections.selected_playlists = []
+    config.collections.sync_liked_songs = False
+    config.collections.sync_liked_albums = False
+
+    config.collections.sync_playlists = True  # empty + enabled == all
+    assert Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan().ops
+
+    config.collections.sync_playlists = False  # the picker's 0-checked state
+    assert Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan().ops == []
+
+
 # --------------------------------------------------------------------------- #
 # Cooperative cancellation (the quit/leave-screen path)
 # --------------------------------------------------------------------------- #
