@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -21,6 +19,7 @@ from ...core.events import (
 from ...core.models import CollectionKind, MatchOutcome, OpKind
 from .. import log_bridge
 from ..messages import ApplyDone, EngineEvent, LogMessage, PlanReady, WorkerFailed
+from ..threads import run_detached
 
 # How an AUTO match will be applied, by the collection it came from.
 _ADD_VERB = {
@@ -73,9 +72,13 @@ class SyncScreen(Screen):
         panel.write("Press 'l' to hide this panel.")
         # Forward s2y log records into the panel for the life of this screen.
         self._log_handler = log_bridge.install(self)
+        self.app.stop.clear()  # re-arm: a prior screen's unmount may have set it
         self.run_plan()
 
     def on_unmount(self) -> None:
+        # Leaving the screen (Esc) winds down any in-flight worker instead of
+        # leaving it running on the shared DB connection.
+        self.app.stop.set()
         log_bridge.remove(self._log_handler)
         self._log_handler = None
 
@@ -89,7 +92,7 @@ class SyncScreen(Screen):
         try:
             # Resolve (and lazily build) the engine INSIDE the thread — building it
             # opens the DB and the API clients, which would block the UI thread.
-            plan = await asyncio.to_thread(lambda: self.app.engine().build_plan(self._emit))
+            plan = await run_detached(lambda: self.app.engine().build_plan(self._emit))
         except Exception as exc:  # noqa: BLE001
             self.post_message(WorkerFailed("plan", str(exc)))
             return
@@ -98,7 +101,7 @@ class SyncScreen(Screen):
     @work
     async def run_apply(self) -> None:
         try:
-            stats = await asyncio.to_thread(
+            stats = await run_detached(
                 lambda: self.app.engine().apply_plan(self._plan, self._emit)
             )
         except Exception as exc:  # noqa: BLE001

@@ -7,8 +7,6 @@ unlocks once both succeed.
 
 from __future__ import annotations
 
-import asyncio
-
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -29,6 +27,7 @@ from ...auth import spotify_pkce, ytmusic_auth
 from ...services.spotify import SpotifyClient
 from ...services.ytmusic import YTMusicClient
 from ..messages import AuthResult, AuthUrl
+from ..threads import run_detached
 
 _YT_HELP = (
     "YouTube Music: open music.youtube.com (logged in) → DevTools → Network → "
@@ -120,7 +119,7 @@ class SetupScreen(Screen):
             self.app.config.spotify.redirect_port = int(port)
         self.app.save_config()
         try:
-            name = await asyncio.to_thread(self._do_spotify_auth)
+            name = await run_detached(self._do_spotify_auth)
         except Exception as exc:  # noqa: BLE001
             self.post_message(AuthResult("spotify", False, str(exc)))
             return
@@ -167,15 +166,17 @@ class SetupScreen(Screen):
                 raw = self.query_one("#yt_headers", TextArea).text.strip()
                 if not raw:
                     raise ValueError("Paste your YouTube Music request headers first")
-                await asyncio.to_thread(
-                    ytmusic_auth.setup_browser, self.app.config, self.app.paths, raw
+                await run_detached(
+                    lambda: ytmusic_auth.setup_browser(self.app.config, self.app.paths, raw)
                 )
             else:
                 self.app.config.ytmusic.oauth_client_id = self.query_one("#yt_cid", Input).value.strip()
                 self.app.config.ytmusic.oauth_client_secret = self.query_one("#yt_secret", Input).value.strip()
-                await asyncio.to_thread(ytmusic_auth.setup_oauth, self.app.config, self.app.paths)
+                await run_detached(
+                    lambda: ytmusic_auth.setup_oauth(self.app.config, self.app.paths)
+                )
             self.app.save_config()
-            name = await asyncio.to_thread(self._verify_ytmusic)
+            name = await run_detached(self._verify_ytmusic)
         except Exception as exc:  # noqa: BLE001
             self.post_message(AuthResult("ytmusic", False, str(exc)))
             return

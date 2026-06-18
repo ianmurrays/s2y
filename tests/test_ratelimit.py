@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
-from s2y.services.ratelimit import Pacer, chunked, retry_after_seconds, with_retry
+from s2y.services.ratelimit import (
+    Pacer,
+    chunked,
+    interruptible_sleep,
+    retry_after_seconds,
+    with_retry,
+)
 
 
 class Fake429(Exception):
@@ -118,3 +127,29 @@ def test_pacer():
     Pacer(0.5, sleep=slept.append).wait()
     Pacer(0.0, sleep=slept.append).wait()  # no sleep when zero
     assert slept == [0.5]
+
+
+def test_interruptible_sleep_wakes_immediately_when_already_set():
+    stop = threading.Event()
+    stop.set()
+    isleep = interruptible_sleep(stop)
+    t0 = time.monotonic()
+    isleep(30)  # a plain time.sleep would block for 30s here
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_interruptible_sleep_wakes_when_set_from_another_thread():
+    stop = threading.Event()
+    isleep = interruptible_sleep(stop)
+    threading.Timer(0.05, stop.set).start()
+    t0 = time.monotonic()
+    isleep(30)
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_interruptible_sleep_blocks_until_timeout_when_never_set():
+    stop = threading.Event()
+    isleep = interruptible_sleep(stop)
+    t0 = time.monotonic()
+    isleep(0.05)
+    assert time.monotonic() - t0 >= 0.05

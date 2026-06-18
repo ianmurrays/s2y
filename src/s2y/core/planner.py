@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 
 from ..config import Config
 from ..store.repository import Repository
@@ -41,6 +42,10 @@ from .models import (
 from .ports import SpotifySource, YtMusicTarget
 
 log = logging.getLogger(__name__)
+
+# A never-set sentinel so callers (CLI, tests) that don't pass a stop signal
+# behave exactly as before — ``is_set()`` is always False.
+_NEVER_STOP = threading.Event()
 
 
 def signature(ids: list[str]) -> str:
@@ -86,11 +91,18 @@ def _plan_track_collection(
     repo: Repository,
     ytmusic: YtMusicTarget,
     on_event: EventSink,
+    stop: threading.Event = _NEVER_STOP,
 ) -> None:
     desired: list[tuple[str, SongInfo]] = []
     total = len(sources)
     log.info("%s: matching %d track(s)…", name, total)
     for i, src in enumerate(sources, 1):
+        if stop.is_set():
+            # The UI asked us to wind down (quit / left the screen). build_plan does
+            # no writes, so a partial plan is harmless — the worker is already
+            # cancelled and the plan discarded; we just need to return fast.
+            log.info("%s: stop requested — abandoning match at %d/%d", name, i, total)
+            return
         # Logged BEFORE the (possibly slow/networked) resolve, so a stuck track is
         # identifiable: the log shows "matching k/N: X" and then goes quiet on X.
         log.info("matching %d/%d: %s — %s", i, total, src.title, src.artist)
@@ -131,6 +143,7 @@ def build_plan(
     repo: Repository,
     config: Config,
     on_event: EventSink = null_sink,
+    stop: threading.Event = _NEVER_STOP,
 ) -> SyncPlan:
     plan = SyncPlan()
     on_event(PhaseStarted("plan"))
@@ -141,12 +154,12 @@ def build_plan(
         config.collections.sync_liked_albums,
     )
 
-    if config.collections.sync_playlists:
-        _plan_playlists(plan, spotify, ytmusic, repo, config, on_event)
-    if config.collections.sync_liked_songs:
-        _plan_liked_songs(plan, spotify, ytmusic, repo, on_event)
-    if config.collections.sync_liked_albums:
-        _plan_liked_albums(plan, spotify, ytmusic, repo, on_event)
+    if config.collections.sync_playlists and not stop.is_set():
+        _plan_playlists(plan, spotify, ytmusic, repo, config, on_event, stop)
+    if config.collections.sync_liked_songs and not stop.is_set():
+        _plan_liked_songs(plan, spotify, ytmusic, repo, on_event, stop)
+    if config.collections.sync_liked_albums and not stop.is_set():
+        _plan_liked_albums(plan, spotify, ytmusic, repo, on_event, stop)
 
     plan.stats = {
         "ops": len(plan.ops),
@@ -162,9 +175,11 @@ def build_plan(
     return plan
 
 
-def _plan_playlists(plan, spotify, ytmusic, repo, config, on_event) -> None:
+def _plan_playlists(plan, spotify, ytmusic, repo, config, on_event, stop=_NEVER_STOP) -> None:
     selected = set(config.collections.selected_playlists)
     for pl in spotify.list_playlists():
+        if stop.is_set():
+            return
         if selected and pl.id not in selected:
             continue
         row = repo.get_collection_by_spotify_id(pl.id)
@@ -185,11 +200,11 @@ def _plan_playlists(plan, spotify, ytmusic, repo, config, on_event) -> None:
             spotify_playlist_id=pl.id, sig=pl.snapshot_id or "",
             sources=tracks, present=present, op_kind=OpKind.ADD_PLAYLIST_ITEM,
             emit_create=(row is None or not row.yt_playlist_id),
-            repo=repo, ytmusic=ytmusic, on_event=on_event,
+            repo=repo, ytmusic=ytmusic, on_event=on_event, stop=stop,
         )
 
 
-def _plan_liked_songs(plan, spotify, ytmusic, repo, on_event) -> None:
+def _plan_liked_songs(plan, spotify, ytmusic, repo, on_event, stop=_NEVER_STOP) -> None:
     liked = spotify.liked_songs()
     sig = signature([s.spotify_uri or "" for s in liked])
     row = repo.get_collection_by_kind("liked_songs")
@@ -203,11 +218,11 @@ def _plan_liked_songs(plan, spotify, ytmusic, repo, on_event) -> None:
         plan, name="Liked Songs", kind=CollectionKind.LIKED_SONGS, key="liked_songs",
         spotify_playlist_id=None, sig=sig, sources=liked,
         present=ytmusic.liked_video_ids(), op_kind=OpKind.LIKE_SONG,
-        emit_create=False, repo=repo, ytmusic=ytmusic, on_event=on_event,
+        emit_create=False, repo=repo, ytmusic=ytmusic, on_event=on_event, stop=stop,
     )
 
 
-def _plan_liked_albums(plan, spotify, ytmusic, repo, on_event) -> None:
+def _plan_liked_albums(plan, spotify, ytmusic, repo, on_event, stop=_NEVER_STOP) -> None:
     albums: list[RemoteAlbum] = spotify.liked_albums()
     sig = signature([a.id for a in albums])
     row = repo.get_collection_by_kind("liked_albums")
@@ -219,6 +234,8 @@ def _plan_liked_albums(plan, spotify, ytmusic, repo, on_event) -> None:
     on_event(CollectionStarted("Liked Albums", CollectionKind.LIKED_ALBUMS, len(albums)))
     present = ytmusic.library_album_keys()
     for alb in albums:
+        if stop.is_set():
+            return
         akey = (matching.normalize_artist(alb.artist), matching.normalize_title(alb.name))
         if akey in present:
             plan.skipped += 1

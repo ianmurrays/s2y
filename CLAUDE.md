@@ -73,9 +73,13 @@ src/s2y/
   qualifiers (Live/Remix) but strips edition tags (Remastered/feat./accents).
 - **union policy (v1):** adds only — nothing is ever auto-deleted.
 - **Threading:** `spotipy`/`ytmusicapi` are blocking. The TUI runs every engine
-  call via `asyncio.to_thread` inside a `@work` worker; `self.app.engine()` is
-  resolved on the UI thread first. Engine events reach the UI only via
-  `post_message` — never touch widgets from a worker thread. Log to file only.
+  call on a **daemon** thread (`tui/threads.py:run_detached`) inside a `@work`
+  worker — daemon so a wedged network call can never block interpreter exit. Quit
+  (`App.action_quit`) sets `app.stop` (a `threading.Event`) and cancels workers;
+  the engine/planner loops and the injected `interruptible_sleep` (via
+  `build_engine(stop=...)`) watch it, so in-flight work winds down promptly and
+  partial applies withhold their signature for retry. Engine events reach the UI
+  only via `post_message` — never touch widgets from a worker thread. Log to file only.
 - **Secrets** live under the config dir (0600), gitignored; never in the DB.
 
 ## Testing

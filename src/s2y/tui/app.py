@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 
 from textual.app import App
@@ -36,7 +37,12 @@ class S2YApp(App):
         self.paths.ensure_dirs()
         self.config = config if config is not None else Config.load(self.paths.config_file)
         self.repo: Repository = open_repo(self.paths)
-        self._engine_factory = engine_factory or (lambda: build_engine(self.config, self.paths))
+        # Cooperative-cancellation signal: set on quit / leaving the sync screen so
+        # in-flight engine work (running on a daemon thread) winds down promptly.
+        self.stop = threading.Event()
+        self._engine_factory = engine_factory or (
+            lambda: build_engine(self.config, self.paths, stop=self.stop)
+        )
         self._engine: Engine | None = None
         self._configured_override = configured
 
@@ -58,6 +64,14 @@ class S2YApp(App):
     def save_config(self) -> None:
         self.config.save(self.paths.config_file)
         self.reset_engine()  # config changed; rebuild clients next time
+
+    # ----- shutdown --------------------------------------------------------- #
+    async def action_quit(self) -> None:
+        # Tell in-flight engine work to wind down, then cancel the awaiting
+        # workers, so quit doesn't wait on a blocking spotipy/ytmusicapi call.
+        self.stop.set()
+        self.workers.cancel_all()
+        self.exit()
 
     # ----- routing ---------------------------------------------------------- #
     def on_mount(self) -> None:

@@ -13,6 +13,7 @@ in-memory fakes.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import defaultdict
 
@@ -37,19 +38,23 @@ class Engine:
         config: Config,
         *,
         sleep: SleepFn = time.sleep,
+        stop: threading.Event | None = None,
     ) -> None:
         self.spotify = spotify
         self.ytmusic = ytmusic
         self.repo = repo
         self.config = config
         self._sleep = sleep
+        # Cooperative cancellation: the UI sets this on quit / leaving the screen.
+        # A never-set event keeps headless (CLI/test) runs running to completion.
+        self._stop = stop if stop is not None else threading.Event()
         self._yt_playlist_ids: dict[str, str] = {}  # collection_key -> yt playlist id
 
     # ----- planning --------------------------------------------------------- #
     def build_plan(self, on_event: EventSink = null_sink) -> SyncPlan:
         return planner.build_plan(
             spotify=self.spotify, ytmusic=self.ytmusic, repo=self.repo,
-            config=self.config, on_event=on_event,
+            config=self.config, on_event=on_event, stop=self._stop,
         )
 
     # ----- applying --------------------------------------------------------- #
@@ -64,7 +69,14 @@ class Engine:
         failures: dict[str, int] = defaultdict(int)
         total = len(plan.ops)
         applied = failed = 0
+        stopped_at = 0  # 1-based index of the first op we did NOT apply (0 = ran fully)
         for i, op in enumerate(plan.ops, 1):
+            if self._stop.is_set():
+                # The UI asked us to wind down (quit / left the screen). Stop now
+                # and treat every remaining op's collection as incomplete below.
+                stopped_at = i
+                log.info("Apply: stop requested at %d/%d — winding down", i, total)
+                break
             try:
                 self._apply_op(op)
                 applied += 1
@@ -77,6 +89,12 @@ class Engine:
                 on_event(OpApplied(op, ok=False, error=str(exc)))
             on_event(Advanced(1))
             pacer.wait()
+
+        if stopped_at:
+            # Withhold the signature for any collection with an unapplied op so the
+            # next run reprocesses it (same invariant as a failed add).
+            for op in plan.ops[stopped_at - 1:]:
+                failures[op.collection_key] += 1
 
         self._persist_signatures(plan, failures)
         log.info("Apply finished: %d applied, %d failed", applied, failed)

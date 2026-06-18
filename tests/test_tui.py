@@ -192,6 +192,40 @@ async def test_sync_applies_plan():
 
 
 @pytest.mark.asyncio
+async def test_quit_signals_stop_and_exits():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("s")  # sync now → SyncScreen
+        await _wait(pilot, lambda: isinstance(app.screen, SyncScreen))
+        assert app.stop.is_set() is False
+        await pilot.press("q")  # quit
+        await pilot.pause()
+    # action_quit told in-flight engine work to wind down before exiting.
+    assert app.stop.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_leaving_sync_screen_signals_stop_then_rearms():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")  # dry run → SyncScreen
+        await _wait(pilot, lambda: isinstance(app.screen, SyncScreen))
+        await pilot.press("escape")  # back to the dashboard
+        await _wait(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        # Unmount asked the worker to wind down…
+        assert app.stop.is_set() is True
+        # …and a fresh sync re-arms the signal so it isn't pre-cancelled.
+        await pilot.press("d")
+        rearmed = await _wait(
+            pilot,
+            lambda: isinstance(app.screen, SyncScreen) and not app.stop.is_set(),
+        )
+        assert rearmed
+
+
+@pytest.mark.asyncio
 async def test_quarantine_accept_writes_mapping():
     app = make_app()
     # Seed a quarantined track with a stored candidate.

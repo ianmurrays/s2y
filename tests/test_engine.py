@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections import defaultdict
 
 import pytest
@@ -296,3 +297,50 @@ def test_selected_playlists_filter(repo, config):
     config.collections.sync_liked_albums = False
     plan = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
     assert plan.ops == []
+
+
+# --------------------------------------------------------------------------- #
+# Cooperative cancellation (the quit/leave-screen path)
+# --------------------------------------------------------------------------- #
+def test_build_plan_bails_out_when_stop_preset(repo, config):
+    spotify, yt = make_world()
+    stop = threading.Event()
+    stop.set()  # as if the user quit before planning started
+    plan = Engine(spotify, yt, repo, config, sleep=NO_SLEEP, stop=stop).build_plan()
+    assert plan.ops == []
+    assert plan.matches == []
+    assert yt.search_calls == 0  # never reached the matching loop
+
+
+def test_apply_stops_when_signaled_and_retries_next_run(repo, config):
+    spotify, yt = make_world()
+    stop = threading.Event()
+    # Trip the stop the moment the first playlist add lands, so the run winds
+    # down mid-plan (like pressing q during apply).
+    orig_add = yt.add_playlist_items
+
+    def add_then_stop(pid, vids):
+        result = orig_add(pid, vids)
+        stop.set()
+        return result
+
+    yt.add_playlist_items = add_then_stop
+
+    eng = Engine(spotify, yt, repo, config, sleep=NO_SLEEP, stop=stop)
+    plan = eng.build_plan()  # built before the stop trips: a full plan
+    stats = eng.apply_plan(plan)
+
+    # Some work happened, but we stopped before finishing the whole plan.
+    assert 0 < stats["applied"] < len(plan.ops)
+    # Matches are persisted up front regardless of the early stop.
+    assert repo.get_track_by_spotify_uri("spotify:track:1") is not None
+    # No collection touched by an unapplied op keeps its signature.
+    chill = repo.get_collection_by_spotify_id("sp1")
+    assert chill is None or chill.spotify_snapshot_id is None
+
+    # A fresh engine (clear stop) reprocesses and retries the missing add, but
+    # does not re-add what already landed.
+    plan2 = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
+    add_ids = [op.video_id for op in plan2.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
+    assert "yv2" in add_ids   # the add we never reached is retried
+    assert "yv1" not in add_ids  # already present, not re-added

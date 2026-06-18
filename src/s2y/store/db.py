@@ -25,10 +25,10 @@ def connect(path: str | Path) -> sqlite3.Connection:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
 
     # check_same_thread=False: the engine connection is created on the UI thread
-    # but used inside asyncio.to_thread workers. Python's sqlite3 is built
-    # serialized (threadsafety=3), so a single connection is safe across threads
-    # as long as we don't use it concurrently — which we don't (one worker at a
-    # time touches a given connection).
+    # but used inside the worker's daemon thread (see s2y.tui.threads). Python's
+    # sqlite3 is built serialized (threadsafety=3), so a single connection is safe
+    # across threads as long as we don't use it concurrently — which we don't (one
+    # worker at a time touches a given connection).
     conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")

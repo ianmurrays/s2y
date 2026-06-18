@@ -7,6 +7,7 @@ Retry-After`` handling. ``sleep`` is injectable so tests run instantly.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
 from typing import TypeVar
@@ -72,6 +73,16 @@ def with_retry(
                 on_retry(exc, attempt, wait)
             sleep(wait)
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+def interruptible_sleep(stop: threading.Event) -> SleepFn:
+    """A :data:`SleepFn` that wakes the instant ``stop`` is set.
+
+    ``Event.wait(timeout)`` returns immediately once another thread calls
+    ``stop.set()``, so a long backoff/pacing sleep aborts the moment the UI asks
+    the engine to stop (e.g. on quit) instead of sleeping out the full interval.
+    """
+    return lambda seconds: stop.wait(seconds)
 
 
 class Pacer:
