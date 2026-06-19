@@ -60,9 +60,7 @@ class YTMusicClient:
             log.warning("%s throttled/failed: %s — retry %d in %.0fs", what, exc, attempt, wait)
 
         try:
-            return with_retry(
-                fn, sleep=self._sleep, on_retry=_on_retry, retryable=is_transient
-            )
+            return with_retry(fn, sleep=self._sleep, on_retry=_on_retry, retryable=is_transient)
         except ServiceError:
             raise
         except Exception as exc:
@@ -95,9 +93,9 @@ class YTMusicClient:
 
     def playlist_video_ids(self, playlist_id: str) -> set[str]:
         log.info("YouTube Music: reading existing items of playlist %s…", playlist_id)
-        data = self._call(
-            lambda: self._yt.get_playlist(playlist_id, limit=_BIG), "get playlist"
-        ) or {}
+        data = (
+            self._call(lambda: self._yt.get_playlist(playlist_id, limit=_BIG), "get playlist") or {}
+        )
         ids = {t["videoId"] for t in data.get("tracks", []) or [] if t.get("videoId")}
         log.info("YouTube Music: playlist %s already has %d items", playlist_id, len(ids))
         return ids
@@ -125,16 +123,24 @@ class YTMusicClient:
     # ----- catalogue search ------------------------------------------------- #
     def search_songs(self, query: str, *, limit: int = 6) -> list[YtCandidate]:
         log.debug("YouTube Music: search songs %r", query)
-        raw = self._call(
-            lambda: self._yt.search(query, filter="songs", limit=limit), f"search songs {query!r}"
-        ) or []
+        raw = (
+            self._call(
+                lambda: self._yt.search(query, filter="songs", limit=limit),
+                f"search songs {query!r}",
+            )
+            or []
+        )
         return [c for c in (_candidate(r, is_song=True) for r in raw) if c]
 
     def search_videos(self, query: str, *, limit: int = 4) -> list[YtCandidate]:
         log.debug("YouTube Music: search videos %r", query)
-        raw = self._call(
-            lambda: self._yt.search(query, filter="videos", limit=limit), f"search videos {query!r}"
-        ) or []
+        raw = (
+            self._call(
+                lambda: self._yt.search(query, filter="videos", limit=limit),
+                f"search videos {query!r}",
+            )
+            or []
+        )
         return [c for c in (_candidate(r, is_song=False) for r in raw) if c]
 
     def album_candidates(
@@ -199,15 +205,11 @@ class YTMusicClient:
         cache[name] = pid
         return pid
 
-    def add_playlist_items(
-        self, playlist_id: str, video_ids: list[str]
-    ) -> dict[str, str | None]:
+    def add_playlist_items(self, playlist_id: str, video_ids: list[str]) -> dict[str, str | None]:
         if not video_ids:
             return {}
         resp = self._call(
-            lambda: self._yt.add_playlist_items(
-                playlist_id, videoIds=video_ids, duplicates=False
-            )
+            lambda: self._yt.add_playlist_items(playlist_id, videoIds=video_ids, duplicates=False)
         )
         return _set_video_ids(resp, video_ids)
 
@@ -216,8 +218,7 @@ class YTMusicClient:
 
     def like_album(self, artist: str, album: str) -> str | None:
         albums = (
-            self._call(lambda: self._yt.search(f"{album} {artist}", filter="albums", limit=3))
-            or []
+            self._call(lambda: self._yt.search(f"{album} {artist}", filter="albums", limit=3)) or []
         )
         want = normalize_title(album)
         for a in albums[:3]:

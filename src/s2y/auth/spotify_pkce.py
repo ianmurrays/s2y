@@ -78,7 +78,7 @@ def authorize(
     paths: Paths,
     *,
     open_browser: bool = True,
-    on_url: Callable[[str], None] | None = None,
+    on_url: Callable[[str], object] | None = None,
     timeout: float = 300.0,
 ) -> spotipy.Spotify:
     """Run the PKCE flow and return a ready client.
@@ -128,8 +128,10 @@ def _capture_code(port: int, *, timeout: float = 300.0) -> str:
     class _Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server API
             params = parse_qs(urlparse(self.path).query)
-            code = (params.get("code") or [None])[0]
-            error = (params.get("error") or [None])[0]
+            codes = params.get("code")
+            errors = params.get("error")
+            code = codes[0] if codes else None
+            error = errors[0] if errors else None
             if code or error:
                 result["code"] = code
                 result["error"] = error

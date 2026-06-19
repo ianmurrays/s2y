@@ -15,11 +15,11 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # --------------------------------------------------------------------------- #
@@ -129,9 +129,7 @@ class Repository:
         return TrackMapRow.from_row(row) if row else None
 
     def get_track(self, track_map_id: int) -> TrackMapRow | None:
-        row = self.conn.execute(
-            "SELECT * FROM track_map WHERE id = ?", (track_map_id,)
-        ).fetchone()
+        row = self.conn.execute("SELECT * FROM track_map WHERE id = ?", (track_map_id,)).fetchone()
         return TrackMapRow.from_row(row) if row else None
 
     def upsert_track(
@@ -235,9 +233,7 @@ class Repository:
         return PlaylistMapRow.from_row(row) if row else None
 
     def list_collections(self) -> list[PlaylistMapRow]:
-        rows = self.conn.execute(
-            "SELECT * FROM playlist_map ORDER BY kind, name"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM playlist_map ORDER BY kind, name").fetchall()
         return [PlaylistMapRow.from_row(r) for r in rows]
 
     def get_or_create_collection(
@@ -378,7 +374,8 @@ class Repository:
     # ----- snapshots -------------------------------------------------------- #
     def save_snapshot(self, side: str, playlist_map_id: int, payload: dict) -> None:
         self.conn.execute(
-            "INSERT INTO snapshot (side, playlist_map_id, taken_at, payload_json) VALUES (?, ?, ?, ?)",
+            "INSERT INTO snapshot (side, playlist_map_id, taken_at, payload_json) "
+            "VALUES (?, ?, ?, ?)",
             (side, playlist_map_id, self._clock(), json.dumps(payload)),
         )
 
@@ -469,7 +466,8 @@ class Repository:
     # ----- sync_run --------------------------------------------------------- #
     def start_run(self, mode: str, dry_run: bool) -> int:
         cur = self.conn.execute(
-            "INSERT INTO sync_run (started_at, mode, dry_run, status) VALUES (?, ?, ?, 'running') RETURNING id",
+            "INSERT INTO sync_run (started_at, mode, dry_run, status) "
+            "VALUES (?, ?, ?, 'running') RETURNING id",
             (self._clock(), mode, int(dry_run)),
         )
         return cur.fetchone()["id"]
@@ -481,6 +479,4 @@ class Repository:
         )
 
     def last_run(self) -> sqlite3.Row | None:
-        return self.conn.execute(
-            "SELECT * FROM sync_run ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        return self.conn.execute("SELECT * FROM sync_run ORDER BY id DESC LIMIT 1").fetchone()

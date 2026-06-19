@@ -35,8 +35,9 @@ class FakeSearch:
 
 
 def song(vid, title, artist, *, album="", dur=None, is_song=True):
-    return YtCandidate(video_id=vid, title=title, artist=artist, album=album,
-                       duration_s=dur, is_song=is_song)
+    return YtCandidate(
+        video_id=vid, title=title, artist=artist, album=album, duration_s=dur, is_song=is_song
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -94,8 +95,9 @@ def test_score_video_penalized_vs_song():
 # --------------------------------------------------------------------------- #
 def test_exact_match_auto_accepts():
     src = SongInfo("Blinding Lights", "The Weeknd", "After Hours", duration_ms=200000)
-    s = FakeSearch(songs=[song("vid", "Blinding Lights", "The Weeknd",
-                               album="After Hours", dur=200)])
+    s = FakeSearch(
+        songs=[song("vid", "Blinding Lights", "The Weeknd", album="After Hours", dur=200)]
+    )
     res = match(src, s)
     assert res.outcome is MatchOutcome.AUTO
     assert res.video_id == "vid"
@@ -104,8 +106,10 @@ def test_exact_match_auto_accepts():
 
 def test_videos_not_consulted_when_song_match_is_strong():
     src = SongInfo("Title", "Artist", duration_ms=180000)
-    s = FakeSearch(songs=[song("vid", "Title", "Artist", dur=180)],
-                   videos=[song("bad", "Title", "Artist", dur=180)])
+    s = FakeSearch(
+        songs=[song("vid", "Title", "Artist", dur=180)],
+        videos=[song("bad", "Title", "Artist", dur=180)],
+    )
     res = match(src, s)
     assert res.outcome is MatchOutcome.AUTO
     assert s.calls["videos"] == 0  # stage 3 skipped — we already had a winner
@@ -113,8 +117,9 @@ def test_videos_not_consulted_when_song_match_is_strong():
 
 def test_video_fallback_when_no_songs():
     src = SongInfo("Rare Track", "Indie Artist", duration_ms=210000)
-    s = FakeSearch(songs=[], videos=[song("vv", "Rare Track", "Indie Artist",
-                                          dur=210, is_song=False)])
+    s = FakeSearch(
+        songs=[], videos=[song("vv", "Rare Track", "Indie Artist", dur=210, is_song=False)]
+    )
     res = match(src, s)
     assert s.calls["videos"] == 1
     assert res.video_id == "vv"
@@ -123,8 +128,7 @@ def test_video_fallback_when_no_songs():
 
 def test_album_stage_contributes_match():
     src = SongInfo("Deep Cut", "Some Band", album="The Album", duration_ms=240000)
-    s = FakeSearch(album=[song("alb", "Deep Cut", "Some Band",
-                               album="The Album", dur=240)])
+    s = FakeSearch(album=[song("alb", "Deep Cut", "Some Band", album="The Album", dur=240)])
     res = match(src, s)
     assert res.outcome is MatchOutcome.AUTO
     assert res.video_id == "alb"

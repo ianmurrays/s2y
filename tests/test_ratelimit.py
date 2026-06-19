@@ -48,8 +48,9 @@ def test_with_retry_recovers_after_failures():
 
 def test_with_retry_reraises_after_exhaustion():
     with pytest.raises(RuntimeError):
-        with_retry(lambda: (_ for _ in ()).throw(RuntimeError("nope")),
-                   tries=3, sleep=lambda _: None)
+        with_retry(
+            lambda: (_ for _ in ()).throw(RuntimeError("nope")), tries=3, sleep=lambda _: None
+        )
 
 
 def test_with_retry_honors_retry_after_on_429():
@@ -81,7 +82,9 @@ def test_with_retry_invokes_on_retry_hook_each_attempt():
         return "ok"
 
     with_retry(
-        flaky, base_sleep=1.0, sleep=lambda _: None,
+        flaky,
+        base_sleep=1.0,
+        sleep=lambda _: None,
         on_retry=lambda exc, attempt, wait: events.append((attempt, wait)),
     )
     assert events == [(1, 1.0), (2, 2.0)]  # attempt index + the backoff it waited
@@ -98,7 +101,8 @@ def test_with_retry_on_retry_hook_reports_429_wait():
         return "ok"
 
     with_retry(
-        flaky, sleep=lambda _: None,
+        flaky,
+        sleep=lambda _: None,
         on_retry=lambda exc, attempt, wait: events.append((attempt, wait)),
     )
     assert events == [(1, 3.0)]  # 2s Retry-After + 1s cushion, surfaced to the hook

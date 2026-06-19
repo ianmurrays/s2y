@@ -20,7 +20,6 @@ from s2y.core.matching import normalize_artist, normalize_title
 from s2y.core.models import (
     ClassifyDecision,
     ClassifyVerdict,
-    CollectionKind,
     OpKind,
     RemoteAlbum,
     RemotePlaylist,
@@ -146,16 +145,37 @@ def config():
 
 
 def make_world(*, with_quarantine=False, fail=None):
-    t1 = SongInfo("Blinding Lights", "The Weeknd", "After Hours",
-                  duration_ms=200000, spotify_uri="spotify:track:1")
-    t2 = SongInfo("Levitating", "Dua Lipa", "Future Nostalgia",
-                  duration_ms=203000, spotify_uri="spotify:track:2")
-    liked = SongInfo("As It Was", "Harry Styles", "Harry's House",
-                     duration_ms=167000, spotify_uri="spotify:track:3")
+    t1 = SongInfo(
+        "Blinding Lights",
+        "The Weeknd",
+        "After Hours",
+        duration_ms=200000,
+        spotify_uri="spotify:track:1",
+    )
+    t2 = SongInfo(
+        "Levitating",
+        "Dua Lipa",
+        "Future Nostalgia",
+        duration_ms=203000,
+        spotify_uri="spotify:track:2",
+    )
+    liked = SongInfo(
+        "As It Was",
+        "Harry Styles",
+        "Harry's House",
+        duration_ms=167000,
+        spotify_uri="spotify:track:3",
+    )
     tracks = [t1, t2]
     if with_quarantine:
-        tracks.append(SongInfo("Totally Obscure Bootleg", "Nobody At All",
-                               duration_ms=999000, spotify_uri="spotify:track:x"))
+        tracks.append(
+            SongInfo(
+                "Totally Obscure Bootleg",
+                "Nobody At All",
+                duration_ms=999000,
+                spotify_uri="spotify:track:x",
+            )
+        )
     spotify = FakeSpotify(
         playlists=[RemotePlaylist(id="sp1", name="Chill", count=len(tracks), snapshot_id="snap-1")],
         tracks={"sp1": tracks},
@@ -285,9 +305,13 @@ def test_resolved_quarantine_is_applied_on_next_run(repo, config):
     # Simulate the review screen: resolve to a chosen video, invalidate signatures.
     q = repo.list_unresolved_quarantine()[0]
     track = repo.upsert_track(
-        spotify_uri=q["source_uri"], yt_video_id="resolved_vid",
-        canon_title="x", canon_artist="y", match_method="manual",
-        match_confidence=1.0, verified=True,
+        spotify_uri=q["source_uri"],
+        yt_video_id="resolved_vid",
+        canon_title="x",
+        canon_artist="y",
+        match_method="manual",
+        match_confidence=1.0,
+        verified=True,
     )
     repo.resolve_quarantine(q["id"], track.id)
     repo.invalidate_signatures()
@@ -367,7 +391,7 @@ def test_apply_stops_when_signaled_and_retries_next_run(repo, config):
     # does not re-add what already landed.
     plan2 = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
     add_ids = [op.video_id for op in plan2.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
-    assert "yv2" in add_ids   # the add we never reached is retried
+    assert "yv2" in add_ids  # the add we never reached is retried
     assert "yv1" not in add_ids  # already present, not re-added
 
 
@@ -406,7 +430,7 @@ def test_resume_dedups_via_membership_when_live_read_empty(repo, config):
     plan2 = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
     add_ids = [op.video_id for op in plan2.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
     assert "yv1" not in add_ids  # known-landed via membership — NOT re-added
-    assert "yv2" in add_ids      # genuinely missing — retried
+    assert "yv2" in add_ids  # genuinely missing — retried
 
 
 def test_live_dedup_failure_degrades_instead_of_aborting(repo, config):
@@ -514,8 +538,12 @@ def _classify_world(repo, *, verdict):
     coll = repo.get_or_create_collection(name="Chill", kind="playlist", spotify_playlist_id="sp1")
     repo.update_collection(coll.id, spotify_snapshot_id="snap-1")
     repo.add_quarantine(
-        source_side="spotify", source_uri="spotify:track:x", title="Obscure",
-        artist="Nobody", album=None, reason="low_conf",
+        source_side="spotify",
+        source_uri="spotify:track:x",
+        title="Obscure",
+        artist="Nobody",
+        album=None,
+        reason="low_conf",
         best_candidate={"video_id": "yvX", "title": "Obscure", "artist": "Nobody"},
     )
     classifier = FakeClassifier({"Obscure": verdict})
@@ -539,9 +567,7 @@ def test_classify_confident_accept_resolves_and_invalidates(repo):
 
 
 def test_classify_below_threshold_accept_is_not_applied(repo):
-    eng, _, _ = _classify_world(
-        repo, verdict=ClassifyVerdict(ClassifyDecision.ACCEPT, "yvX", 0.50)
-    )
+    eng, _, _ = _classify_world(repo, verdict=ClassifyVerdict(ClassifyDecision.ACCEPT, "yvX", 0.50))
     stats = eng.classify_quarantine(apply=True)
     assert stats["accepted"] == 1 and stats["applied"] == 0
     assert repo.count_unresolved_quarantine() == 1
@@ -559,9 +585,7 @@ def test_classify_reject_and_uncertain_keep_quarantine(repo):
 
 
 def test_classify_dry_run_resolves_nothing(repo):
-    eng, _, _ = _classify_world(
-        repo, verdict=ClassifyVerdict(ClassifyDecision.ACCEPT, "yvX", 0.95)
-    )
+    eng, _, _ = _classify_world(repo, verdict=ClassifyVerdict(ClassifyDecision.ACCEPT, "yvX", 0.95))
     stats = eng.classify_quarantine(apply=False)
     assert stats["accepted"] == 1 and stats["applied"] == 0
     assert repo.count_unresolved_quarantine() == 1
@@ -584,33 +608,41 @@ def test_classify_without_classifier_is_a_noop(repo, config):
     eng.apply_plan(eng.build_plan())
     before = repo.count_unresolved_quarantine()
     stats = eng.classify_quarantine(apply=True)
-    assert stats == {"considered": 0, "accepted": 0, "rejected": 0,
-                     "uncertain": 0, "applied": 0}
+    assert stats == {"considered": 0, "accepted": 0, "rejected": 0, "uncertain": 0, "applied": 0}
     assert repo.count_unresolved_quarantine() == before
 
 
 def test_classify_judges_a_whole_quarantine_in_one_batch_call(repo):
     """Three quarantined rows are judged in a SINGLE classifier call (the win)."""
     spotify = FakeSpotify(playlists=[], tracks={})
-    yt = FakeYT({
-        "Obscure": cand("yv1", "Obscure", "Nobody", 200),
-        "Hidden": cand("yv2", "Hidden", "Someone", 210),
-        "Buried": cand("yv3", "Buried", "Anon", 220),
-    })
+    yt = FakeYT(
+        {
+            "Obscure": cand("yv1", "Obscure", "Nobody", 200),
+            "Hidden": cand("yv2", "Hidden", "Someone", 210),
+            "Buried": cand("yv3", "Buried", "Anon", 220),
+        }
+    )
     for uri, title, vid in [
         ("spotify:track:1", "Obscure", "yv1"),
         ("spotify:track:2", "Hidden", "yv2"),
         ("spotify:track:3", "Buried", "yv3"),
     ]:
         repo.add_quarantine(
-            source_side="spotify", source_uri=uri, title=title, artist="Nobody",
-            album=None, reason="low_conf", best_candidate={"video_id": vid},
+            source_side="spotify",
+            source_uri=uri,
+            title=title,
+            artist="Nobody",
+            album=None,
+            reason="low_conf",
+            best_candidate={"video_id": vid},
         )
-    classifier = FakeClassifier({
-        "Obscure": ClassifyVerdict(ClassifyDecision.ACCEPT, "yv1", 0.95),
-        "Hidden": ClassifyVerdict(ClassifyDecision.REJECT, None, 0.8),
-        "Buried": ClassifyVerdict(ClassifyDecision.ACCEPT, "yv3", 0.9),
-    })
+    classifier = FakeClassifier(
+        {
+            "Obscure": ClassifyVerdict(ClassifyDecision.ACCEPT, "yv1", 0.95),
+            "Hidden": ClassifyVerdict(ClassifyDecision.REJECT, None, 0.8),
+            "Buried": ClassifyVerdict(ClassifyDecision.ACCEPT, "yv3", 0.9),
+        }
+    )
     eng = Engine(spotify, yt, repo, Config(), sleep=NO_SLEEP, classifier=classifier)
 
     stats = eng.classify_quarantine(apply=True)
@@ -626,8 +658,12 @@ def test_classify_splits_into_chunks_by_batch_size(repo):
     yt = FakeYT({f"T{i}": cand(f"v{i}", f"T{i}", "A", 200) for i in range(5)})
     for i in range(5):
         repo.add_quarantine(
-            source_side="spotify", source_uri=f"spotify:track:{i}", title=f"T{i}",
-            artist="A", album=None, reason="low_conf",
+            source_side="spotify",
+            source_uri=f"spotify:track:{i}",
+            title=f"T{i}",
+            artist="A",
+            album=None,
+            reason="low_conf",
         )
     classifier = FakeClassifier({})  # all UNCERTAIN — nothing resolved
     cfg = Config()
@@ -647,8 +683,12 @@ def test_classify_emits_progress_narration(repo):
     yt = FakeYT({f"T{i}": cand(f"v{i}", f"T{i}", "A", 200) for i in range(3)})
     for i in range(3):
         repo.add_quarantine(
-            source_side="spotify", source_uri=f"spotify:track:{i}", title=f"T{i}",
-            artist="A", album=None, reason="low_conf",
+            source_side="spotify",
+            source_uri=f"spotify:track:{i}",
+            title=f"T{i}",
+            artist="A",
+            album=None,
+            reason="low_conf",
         )
     classifier = FakeClassifier({})
     cfg = Config()

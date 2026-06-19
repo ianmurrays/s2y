@@ -42,8 +42,12 @@ def test_chrome_curl_without_explicit_cookie_header_uses_b_flag():
 
 def test_spotify_scopes_cover_read_and_write():
     scopes = set(spotify_pkce.SCOPES)
-    assert {"playlist-modify-private", "user-library-modify",
-            "user-library-read", "playlist-read-private"} <= scopes
+    assert {
+        "playlist-modify-private",
+        "user-library-modify",
+        "user-library-read",
+        "playlist-read-private",
+    } <= scopes
 
 
 def test_effective_redirect_defaults_to_loopback_literal():

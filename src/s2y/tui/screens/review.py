@@ -10,6 +10,7 @@ is confident about so only the genuinely ambiguous ones are left for you.
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING, Any
 
 from textual import work
 from textual.app import ComposeResult
@@ -20,11 +21,17 @@ from textual.widgets import DataTable, Footer, Header, ProgressBar, Static
 from ...core.events import Advanced, ClassifyVerdictEvent, LogLine, PhaseStarted
 from ...core.models import ClassifyDecision
 from ...core.resolve import resolve_quarantine_match
+
+if TYPE_CHECKING:
+    from ..app import S2YApp
 from ..messages import ClassifyDone, EngineEvent, WorkerFailed
 from ..threads import run_detached
 
 
 class QuarantineScreen(Screen):
+    if TYPE_CHECKING:
+        app: S2YApp  # type: ignore[assignment]  # narrow Textual's App to ours
+
     BINDINGS = [
         ("escape", "back", "Back"),
         ("a", "accept", "Accept best"),
@@ -44,7 +51,7 @@ class QuarantineScreen(Screen):
             yield Static("", id="q_phase")
             yield ProgressBar(total=None, show_eta=False, id="q_bar")
             yield Static("", id="q_summary")
-            table = DataTable(id="q_table")
+            table: DataTable[Any] = DataTable(id="q_table")
             table.cursor_type = "row"
             table.add_columns("Track", "Artist", "Best YT match", "Conf")
             yield table
@@ -161,9 +168,7 @@ class QuarantineScreen(Screen):
     async def run_classify(self) -> None:
         try:
             # Build/resolve the engine INSIDE the thread (it opens the DB + clients).
-            stats = await run_detached(
-                lambda: self.app.engine().classify_quarantine(self._emit)
-            )
+            stats = await run_detached(lambda: self.app.engine().classify_quarantine(self._emit))
         except Exception as exc:  # noqa: BLE001
             self.post_message(WorkerFailed("classify", str(exc)))
             return
@@ -177,9 +182,7 @@ class QuarantineScreen(Screen):
             bar.display = True
             bar.update(total=event.total or None, progress=0)
             self.query_one("#q_summary", Static).display = True
-            self.query_one("#q_phase", Static).update(
-                f"Classifying {event.total} track(s)…"
-            )
+            self.query_one("#q_phase", Static).update(f"Classifying {event.total} track(s)…")
         elif isinstance(event, LogLine):
             self.query_one("#q_phase", Static).update(event.message)
         elif isinstance(event, Advanced):
@@ -208,17 +211,14 @@ class QuarantineScreen(Screen):
         self.query_one("#q_phase", Static).update("Classification complete.")
         s = message.stats
         self.notify(
-            f"Claude: {s['applied']} resolved · {s['rejected']} rejected · "
-            f"{s['uncertain']} unsure"
+            f"Claude: {s['applied']} resolved · {s['rejected']} rejected · {s['uncertain']} unsure"
         )
         self._load()
 
     def on_worker_failed(self, message: WorkerFailed) -> None:
         self._classifying = False
         self.query_one("#q_bar", ProgressBar).display = False
-        self.query_one("#q_phase", Static).update(
-            f"[red]Classify failed:[/] {message.detail}"
-        )
+        self.query_one("#q_phase", Static).update(f"[red]Classify failed:[/] {message.detail}")
         self._load()
 
 

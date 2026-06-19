@@ -1,0 +1,24 @@
+# gitleaks configuration for s2y.
+#
+# We extend gitleaks' built-in rule set (so all the usual token/key detectors
+# stay on) and add a narrow allowlist for the auth test fixtures, which contain
+# deliberately fake header/cookie values used to exercise the header parsers.
+# Real secrets never live in the repo: tokens and headers are written to the OS
+# config dir (0600) at runtime and are gitignored (see .gitignore).
+
+title = "s2y gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-safe, obviously-fake auth fixtures used only in tests"
+paths = [
+  '''tests/test_auth\.py''',
+]
+# Belt-and-suspenders: also allow the specific dummy tokens by content, in case
+# the fixtures are ever copied into another test file.
+regexes = [
+  '''SAPISIDHASH 1234_hash''',
+  '''VISITOR_INFO1=abc''',
+]

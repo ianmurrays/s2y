@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Header, Input, Label, Static
 
+if TYPE_CHECKING:
+    from ..app import S2YApp
+
 
 class SettingsScreen(Screen):
+    if TYPE_CHECKING:
+        app: S2YApp  # type: ignore[assignment]  # narrow Textual's App to ours
+
     BINDINGS = [("escape", "back", "Back")]
 
     def compose(self) -> ComposeResult:
@@ -27,11 +35,15 @@ class SettingsScreen(Screen):
 
             with Vertical(classes="card"):
                 yield Label("[b]Pacing & safety[/b]")
-                yield Static("Seconds to pause between writes (avoids rate limits).",
-                             classes="help")
+                yield Static(
+                    "Seconds to pause between writes (avoids rate limits).", classes="help"
+                )
                 yield Input(value=str(cfg.sync.track_sleep), id="track_sleep")
-                yield Static("Circuit breaker: abort if a diff would remove more than "
-                             "this % of a collection (Phase 3).", classes="help")
+                yield Static(
+                    "Circuit breaker: abort if a diff would remove more than "
+                    "this % of a collection (Phase 3).",
+                    classes="help",
+                )
                 yield Input(value=str(cfg.sync.circuit_breaker_pct), id="cb_pct")
 
             with Horizontal(id="settings_controls"):
@@ -48,8 +60,12 @@ class SettingsScreen(Screen):
         # Settings never writes them. Liked Songs/Albums stay all-or-nothing here.
         cfg.collections.sync_liked_songs = self.query_one("#c_ls", Checkbox).value
         cfg.collections.sync_liked_albums = self.query_one("#c_la", Checkbox).value
-        cfg.sync.track_sleep = _as_float(self.query_one("#track_sleep", Input).value, cfg.sync.track_sleep)
-        cfg.sync.circuit_breaker_pct = _as_int(self.query_one("#cb_pct", Input).value, cfg.sync.circuit_breaker_pct)
+        cfg.sync.track_sleep = _as_float(
+            self.query_one("#track_sleep", Input).value, cfg.sync.track_sleep
+        )
+        cfg.sync.circuit_breaker_pct = _as_int(
+            self.query_one("#cb_pct", Input).value, cfg.sync.circuit_breaker_pct
+        )
         self.app.save_config()
         self.query_one("#settings_status", Static).update("[green]Saved.[/]")
 

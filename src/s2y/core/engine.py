@@ -95,8 +95,12 @@ class Engine:
         """
         if not persist_matches:
             return planner.build_plan(
-                spotify=self.spotify, ytmusic=self.ytmusic, repo=self.repo,
-                config=self.config, on_event=on_event, stop=self._stop,
+                spotify=self.spotify,
+                ytmusic=self.ytmusic,
+                repo=self.repo,
+                config=self.config,
+                on_event=on_event,
+                stop=self._stop,
             )
 
         buffer: list[MatchResult] = []
@@ -116,14 +120,22 @@ class Engine:
                 r = event.result
                 # Only persist genuinely new resolutions; cached hits are already
                 # in track_map, and quarantine/no-match carry no videoId.
-                if r.outcome is MatchOutcome.AUTO and r.video_id and r.method is not MatchMethod.CACHED:
+                if (
+                    r.outcome is MatchOutcome.AUTO
+                    and r.video_id
+                    and r.method is not MatchMethod.CACHED
+                ):
                     buffer.append(r)
                     if len(buffer) >= 25:
                         flush()
 
         plan = planner.build_plan(
-            spotify=self.spotify, ytmusic=self.ytmusic, repo=self.repo,
-            config=self.config, on_event=sink, stop=self._stop,
+            spotify=self.spotify,
+            ytmusic=self.ytmusic,
+            repo=self.repo,
+            config=self.config,
+            on_event=sink,
+            stop=self._stop,
         )
         flush()
         return plan
@@ -169,7 +181,7 @@ class Engine:
             if stopped_at:
                 # Withhold the signature for any collection with an unapplied op so
                 # the next run reprocesses it (same invariant as a failed add).
-                for op in plan.ops[stopped_at - 1:]:
+                for op in plan.ops[stopped_at - 1 :]:
                     failures[op.collection_key] += 1
 
             self._persist_signatures(plan, failures)
@@ -190,9 +202,7 @@ class Engine:
         return stats
 
     # ----- classify (LLM judge over the quarantine) ------------------------- #
-    def classify_quarantine(
-        self, on_event: EventSink = null_sink, *, apply: bool = True
-    ) -> dict:
+    def classify_quarantine(self, on_event: EventSink = null_sink, *, apply: bool = True) -> dict:
         """Run the LLM judge over every unresolved quarantine entry, in batches.
 
         The quarantine is split into chunks of ``classify.batch_size``. For each
@@ -208,8 +218,11 @@ class Engine:
         the apply loop. No-ops when no classifier is configured.
         """
         stats = {
-            "considered": 0, "accepted": 0, "rejected": 0,
-            "uncertain": 0, "applied": 0,
+            "considered": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "uncertain": 0,
+            "applied": 0,
         }
         if self.classifier is None:
             return stats
@@ -235,9 +248,7 @@ class Engine:
             # model call) *before* it starts so the UI never looks frozen.
             lo, hi = done + 1, done + len(chunk)
             done += len(chunk)
-            on_event(LogLine(
-                f"Fetching YouTube candidates — tracks {lo}–{hi} of {total}…"
-            ))
+            on_event(LogLine(f"Fetching YouTube candidates — tracks {lo}–{hi} of {total}…"))
             items: list[ClassifyItem] = []
             for row in chunk:
                 source = _song_from_quarantine_row(row)
@@ -246,12 +257,10 @@ class Engine:
                 )
                 items.append(ClassifyItem(source, candidates))
 
-            on_event(LogLine(
-                f"Asking Claude about {len(items)} track(s)… (batch {k}/{n_batches})"
-            ))
+            on_event(LogLine(f"Asking Claude about {len(items)} track(s)… (batch {k}/{n_batches})"))
             verdicts = self.classifier.classify_batch(tuple(items))
 
-            for row, verdict in zip(chunk, verdicts):
+            for row, verdict in zip(chunk, verdicts, strict=True):
                 stats["considered"] += 1
                 applied = False
                 if verdict.decision is ClassifyDecision.ACCEPT:
@@ -281,7 +290,9 @@ class Engine:
 
         log.info(
             "Classify finished: %d considered, %d accepted, %d applied",
-            stats["considered"], stats["accepted"], stats["applied"],
+            stats["considered"],
+            stats["accepted"],
+            stats["applied"],
         )
         on_event(PhaseFinished("classify"))
         return stats
@@ -350,11 +361,11 @@ class Engine:
         cached = self._coll_ids.get(op.collection_key)
         if cached is not None:
             return cached
-        spotify_pl_id = (
-            op.collection_key if op.collection_kind is CollectionKind.PLAYLIST else None
-        )
+        spotify_pl_id = op.collection_key if op.collection_kind is CollectionKind.PLAYLIST else None
         coll = self.repo.get_or_create_collection(
-            name=op.collection, kind=op.collection_kind.value, spotify_playlist_id=spotify_pl_id,
+            name=op.collection,
+            kind=op.collection_kind.value,
+            spotify_playlist_id=spotify_pl_id,
         )
         self._coll_ids[op.collection_key] = coll.id
         return coll.id
@@ -411,7 +422,8 @@ class Engine:
         with self.repo.transaction():
             for cs in plan.collections:
                 coll = self.repo.get_or_create_collection(
-                    name=cs.name, kind=cs.kind.value,
+                    name=cs.name,
+                    kind=cs.kind.value,
                     spotify_playlist_id=cs.spotify_playlist_id,
                 )
                 updates: dict[str, str] = {}

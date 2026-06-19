@@ -35,14 +35,14 @@ _RULES = [
     "  NOT a match for the studio original (and vice-versa).",
     "- A length difference of more than a few seconds means a different recording.",
     "- A different artist is not a match, even if the title is identical.",
-    "- When unsure, prefer \"reject\" over a wrong match.",
+    '- When unsure, prefer "reject" over a wrong match.',
 ]
 
 
 def _candidate_line(label: str, c: YtCandidate) -> str:
     kind = "song" if c.is_song else "video"
     return (
-        f"    [{label}] video_id={c.video_id} | \"{c.title}\" — {c.artist} | "
+        f'    [{label}] video_id={c.video_id} | "{c.title}" — {c.artist} | '
         f"album: {c.album or 'unknown'} | length: {_fmt_duration(c.duration_s)} | {kind}"
     )
 
@@ -93,8 +93,8 @@ def build_batch_prompt(items: tuple[ClassifyItem, ...]) -> str:
         '[{"index": <track number>, "decision": "accept" | "reject", '
         '"video_id": "<id of the chosen candidate, or null>", '
         '"confidence": <number 0.0-1.0>, "reasoning": "<one short sentence>"}, ...]',
-        "- \"index\" MUST equal the track number ([1]..[N]) shown above.",
-        "- \"video_id\" MUST be copied exactly from one of THAT track's candidates, "
+        '- "index" MUST equal the track number ([1]..[N]) shown above.',
+        '- "video_id" MUST be copied exactly from one of THAT track\'s candidates, '
         "or null when you reject.",
         "- Include every track exactly once.",
     ]
@@ -163,9 +163,7 @@ def _uncertain() -> ClassifyVerdict:
     return ClassifyVerdict(ClassifyDecision.UNCERTAIN, None, 0.0)
 
 
-def _verdict_from_obj(
-    obj, candidates: tuple[YtCandidate, ...]
-) -> ClassifyVerdict:
+def _verdict_from_obj(obj, candidates: tuple[YtCandidate, ...]) -> ClassifyVerdict:
     """Turn one decision object into a typed verdict — the per-track trust boundary.
 
     An unknown decision, or an ACCEPT whose ``video_id`` is not among *these*
@@ -186,18 +184,14 @@ def _verdict_from_obj(
         video_id = obj.get("video_id")
         valid_ids = {c.video_id for c in candidates}
         if isinstance(video_id, str) and video_id in valid_ids:
-            return ClassifyVerdict(
-                ClassifyDecision.ACCEPT, video_id, confidence, reasoning
-            )
+            return ClassifyVerdict(ClassifyDecision.ACCEPT, video_id, confidence, reasoning)
         # Hallucinated / missing id — don't trust an accept we can't verify.
         return _uncertain()
 
     return _uncertain()
 
 
-def parse_batch_verdicts(
-    text: str, items: tuple[ClassifyItem, ...]
-) -> tuple[ClassifyVerdict, ...]:
+def parse_batch_verdicts(text: str, items: tuple[ClassifyItem, ...]) -> tuple[ClassifyVerdict, ...]:
     """Parse the model's JSON-array reply into one verdict per item. Never raises.
 
     Returns a tuple of exactly ``len(items)`` verdicts, positionally aligned with the
@@ -220,9 +214,12 @@ def parse_batch_verdicts(
     for elem in arr:
         if not isinstance(elem, dict):
             continue
+        raw = elem.get("index")
+        if not isinstance(raw, (int, float, str)):
+            continue
         try:
-            i = int(elem.get("index"))
-        except (TypeError, ValueError):
+            i = int(raw)
+        except ValueError:
             continue
         if 1 <= i <= n:
             buckets.setdefault(i, []).append(elem)
@@ -230,9 +227,7 @@ def parse_batch_verdicts(
     # Fallback: a well-formed array with no usable indices but the right length is
     # mapped positionally (per-track video_id validation still guards correctness).
     if not buckets and len(arr) == n and all(isinstance(e, dict) for e in arr):
-        return tuple(
-            _verdict_from_obj(arr[pos], items[pos].candidates) for pos in range(n)
-        )
+        return tuple(_verdict_from_obj(arr[pos], items[pos].candidates) for pos in range(n))
 
     out = []
     for pos in range(n):

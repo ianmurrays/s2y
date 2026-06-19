@@ -46,10 +46,14 @@ class _FakeSpotify:
     """Stub Spotify source for the playlist picker — no network."""
 
     def __init__(self, playlists=None):
-        self._playlists = playlists if playlists is not None else [
-            RemotePlaylist("sp1", "Chill", 2, "s1"),
-            RemotePlaylist("sp2", "Focus", 5, "s2"),
-        ]
+        self._playlists = (
+            playlists
+            if playlists is not None
+            else [
+                RemotePlaylist("sp1", "Chill", 2, "s1"),
+                RemotePlaylist("sp2", "Focus", 5, "s2"),
+            ]
+        )
 
     def list_playlists(self):
         return list(self._playlists)
@@ -65,13 +69,26 @@ class FakeEngine:
         self.repo = repo
         self.spotify = spotify if spotify is not None else _FakeSpotify()
         src = SongInfo("Song", "Artist", spotify_uri="spotify:track:1")
-        self.match = MatchResult(src, MatchOutcome.AUTO, YtCandidate("v1", "Song", "Artist"),
-                                 MatchMethod.META, 0.95)
-        self.op = SyncOp(OpKind.ADD_PLAYLIST_ITEM, "Chill", CollectionKind.PLAYLIST,
-                         collection_key="sp1", source=src, video_id="v1")
+        self.match = MatchResult(
+            src, MatchOutcome.AUTO, YtCandidate("v1", "Song", "Artist"), MatchMethod.META, 0.95
+        )
+        self.op = SyncOp(
+            OpKind.ADD_PLAYLIST_ITEM,
+            "Chill",
+            CollectionKind.PLAYLIST,
+            collection_key="sp1",
+            source=src,
+            video_id="v1",
+        )
         qsrc = SongInfo("Weird", "Nobody", spotify_uri="spotify:track:2")
-        self.q = MatchResult(qsrc, MatchOutcome.QUARANTINE, YtCandidate("vq", "Weirdish", "Nob"),
-                             MatchMethod.FUZZY, 0.4, reason="low_conf")
+        self.q = MatchResult(
+            qsrc,
+            MatchOutcome.QUARANTINE,
+            YtCandidate("vq", "Weirdish", "Nob"),
+            MatchMethod.FUZZY,
+            0.4,
+            reason="low_conf",
+        )
 
     def build_plan(self, on_event=lambda e: None, *, persist_matches=False):
         on_event(CollectionStarted("Chill", CollectionKind.PLAYLIST, 2))
@@ -84,8 +101,12 @@ class FakeEngine:
         for op in plan.ops:
             on_event(OpApplied(op, ok=True))
             on_event(Advanced(1))
-        return {"applied": len(plan.ops), "failed": 0,
-                "quarantined": len(plan.quarantine), "skipped": 0}
+        return {
+            "applied": len(plan.ops),
+            "failed": 0,
+            "quarantined": len(plan.quarantine),
+            "skipped": 0,
+        }
 
     def classify_quarantine(self, on_event=lambda e: None, *, apply=True):
         # Mirror the engine: emit the same progress events (so the screen's bar /
@@ -106,27 +127,37 @@ class FakeEngine:
             ok = bool(apply and best and best.get("video_id"))
             if ok:
                 resolve_quarantine_match(
-                    self.repo, quarantine_id=row["id"], spotify_uri=row["source_uri"],
-                    yt_video_id=best["video_id"], title=row["title"],
-                    artist=row["artist"], match_method="claude", match_confidence=0.95,
+                    self.repo,
+                    quarantine_id=row["id"],
+                    spotify_uri=row["source_uri"],
+                    yt_video_id=best["video_id"],
+                    title=row["title"],
+                    artist=row["artist"],
+                    match_method="claude",
+                    match_confidence=0.95,
                 )
                 applied += 1
             verdict = ClassifyVerdict(
                 ClassifyDecision.ACCEPT if ok else ClassifyDecision.UNCERTAIN,
-                best["video_id"] if ok else None, 0.95 if ok else 0.0,
+                best["video_id"] if ok else None,
+                0.95 if ok else 0.0,
             )
             on_event(ClassifyVerdictEvent(row["title"], row["artist"], verdict, ok))
             on_event(Advanced(1))
         on_event(PhaseFinished("classify"))
-        return {"considered": len(rows), "accepted": applied, "rejected": 0,
-                "uncertain": 0, "applied": applied}
+        return {
+            "considered": len(rows),
+            "accepted": applied,
+            "rejected": 0,
+            "uncertain": 0,
+            "applied": applied,
+        }
 
 
 def make_app(*, configured=True):
     tmp = pathlib.Path(tempfile.mkdtemp())
     paths = Paths(config_dir=tmp / "c", data_dir=tmp / "d")
-    app = S2YApp(config=Config(), paths=paths, configured=configured,
-                 engine_factory=None)
+    app = S2YApp(config=Config(), paths=paths, configured=configured, engine_factory=None)
     app._engine_factory = lambda: FakeEngine(app.repo)  # noqa: SLF001
     return app
 
@@ -178,8 +209,9 @@ async def test_dry_run_builds_plan_without_apply():
         await pilot.pause()
         assert isinstance(app.screen, DashboardScreen)
         await pilot.press("d")  # dry run
-        ok = await _wait(pilot, lambda: isinstance(app.screen, SyncScreen)
-                         and app.screen._plan is not None)
+        ok = await _wait(
+            pilot, lambda: isinstance(app.screen, SyncScreen) and app.screen._plan is not None
+        )
         assert ok
         assert len(app.screen._plan.ops) == 1
         # Dry run never enables Apply: the action is a no-op.
@@ -195,8 +227,9 @@ async def test_sync_screen_tracks_per_track_progress():
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("d")  # dry run
-        await _wait(pilot, lambda: isinstance(app.screen, SyncScreen)
-                    and app.screen._plan is not None)
+        await _wait(
+            pilot, lambda: isinstance(app.screen, SyncScreen) and app.screen._plan is not None
+        )
         # CollectionStarted set the total; each TrackMatched advanced the counter.
         assert app.screen._total == 2
         assert app.screen._matched == 2
@@ -210,15 +243,16 @@ async def test_sync_table_shows_destination_and_action():
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("d")
-        await _wait(pilot, lambda: isinstance(app.screen, SyncScreen)
-                    and app.screen._plan is not None)
+        await _wait(
+            pilot, lambda: isinstance(app.screen, SyncScreen) and app.screen._plan is not None
+        )
         table = app.screen.query_one("#rows", DataTable)
         # Columns: Source, → YouTube Music, Where, Conf, Action
         first = table.get_row_at(0)
-        assert first[2] == "Chill"            # Where = the collection it came from
+        assert first[2] == "Chill"  # Where = the collection it came from
         assert first[4] == "add to playlist"  # an AUTO match into a playlist
         actions = [table.get_row_at(r)[4] for r in range(table.row_count)]
-        assert "review" in actions            # the quarantined track is flagged
+        assert "review" in actions  # the quarantined track is flagged
 
 
 @pytest.mark.asyncio
@@ -249,8 +283,9 @@ async def test_sync_applies_plan():
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("s")  # sync now
-        await _wait(pilot, lambda: isinstance(app.screen, SyncScreen)
-                    and app.screen._plan is not None)
+        await _wait(
+            pilot, lambda: isinstance(app.screen, SyncScreen) and app.screen._plan is not None
+        )
         assert app.screen._apply_ready is True
         await pilot.press("a")
         applied = await _wait(pilot, lambda: app.screen.apply_stats is not None)
@@ -298,8 +333,12 @@ async def test_quarantine_accept_writes_mapping():
     app = make_app()
     # Seed a quarantined track with a stored candidate.
     app.repo.add_quarantine(
-        source_side="spotify", source_uri="spotify:track:2", title="Weird",
-        artist="Nobody", album=None, reason="low_conf",
+        source_side="spotify",
+        source_uri="spotify:track:2",
+        title="Weird",
+        artist="Nobody",
+        album=None,
+        reason="low_conf",
         best_candidate={"video_id": "vq", "title": "Weirdish", "confidence": 0.4},
     )
     async with app.run_test() as pilot:
@@ -319,8 +358,12 @@ async def test_quarantine_classify_resolves_via_engine():
     app = make_app()
     app.config.classify.enabled = True  # opt in
     app.repo.add_quarantine(
-        source_side="spotify", source_uri="spotify:track:3", title="Fuzzy",
-        artist="Band", album=None, reason="low_conf",
+        source_side="spotify",
+        source_uri="spotify:track:3",
+        title="Fuzzy",
+        artist="Band",
+        album=None,
+        reason="low_conf",
         best_candidate={"video_id": "vc", "title": "Fuzzy", "confidence": 0.6},
     )
     async with app.run_test() as pilot:
@@ -343,8 +386,12 @@ async def test_quarantine_classify_shows_progress():
     app.config.classify.enabled = True
     for i in range(3):
         app.repo.add_quarantine(
-            source_side="spotify", source_uri=f"spotify:track:p{i}", title=f"Track {i}",
-            artist="Band", album=None, reason="low_conf",
+            source_side="spotify",
+            source_uri=f"spotify:track:p{i}",
+            title=f"Track {i}",
+            artist="Band",
+            album=None,
+            reason="low_conf",
             best_candidate={"video_id": f"vp{i}", "title": f"Track {i}", "confidence": 0.6},
         )
     async with app.run_test() as pilot:
@@ -369,8 +416,12 @@ async def test_quarantine_classify_shows_progress():
 async def test_quarantine_classify_disabled_is_a_noop():
     app = make_app()  # classify disabled by default
     app.repo.add_quarantine(
-        source_side="spotify", source_uri="spotify:track:4", title="Keep",
-        artist="Me", album=None, reason="low_conf",
+        source_side="spotify",
+        source_uri="spotify:track:4",
+        title="Keep",
+        artist="Me",
+        album=None,
+        reason="low_conf",
         best_candidate={"video_id": "vk"},
     )
     async with app.run_test() as pilot:
@@ -510,8 +561,9 @@ async def test_load_error_keeps_save_disabled():
         await _wait(pilot, lambda: isinstance(app.screen, PlaylistsScreen))
         failed = await _wait(
             pilot,
-            lambda: "Couldn't load"
-            in str(app.screen.query_one("#playlists_status", Static).render()),
+            lambda: (
+                "Couldn't load" in str(app.screen.query_one("#playlists_status", Static).render())
+            ),
         )
         assert failed
         assert app.screen._loaded is False
@@ -550,9 +602,7 @@ async def test_settings_summary_refreshes_after_picker():
 
         # Into the picker: uncheck everything, save, back out.
         app.screen.query_one("#choose_pl", Button).press()
-        await _wait(
-            pilot, lambda: isinstance(app.screen, PlaylistsScreen) and app.screen._loaded
-        )
+        await _wait(pilot, lambda: isinstance(app.screen, PlaylistsScreen) and app.screen._loaded)
         app.screen.query_one("#pl_none", Button).press()
         await pilot.pause()
         app.screen.query_one("#pl_save", Button).press()

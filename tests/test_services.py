@@ -70,8 +70,12 @@ class FakeSpotify:
 
     def current_user_saved_albums(self, limit=50):
         return {
-            "items": [{"added_at": "x", "album": {"id": "al1", "name": "Greatest",
-                                                  "artists": [{"name": "Band"}]}}],
+            "items": [
+                {
+                    "added_at": "x",
+                    "album": {"id": "al1", "name": "Greatest", "artists": [{"name": "Band"}]},
+                }
+            ],
             "next": None,
         }
 
@@ -133,20 +137,36 @@ class FakeYT:
 
     def search(self, query, filter=None, limit=20, **kw):
         if filter == "songs":
-            return [{"videoId": "s1", "title": "Song A", "artists": [{"name": "Artist A"}],
-                     "album": {"name": "Album"}, "duration_seconds": 200},
-                    {"title": "No video id"}]
+            return [
+                {
+                    "videoId": "s1",
+                    "title": "Song A",
+                    "artists": [{"name": "Artist A"}],
+                    "album": {"name": "Album"},
+                    "duration_seconds": 200,
+                },
+                {"title": "No video id"},
+            ]
         if filter == "videos":
-            return [{"videoId": "vid1", "title": "Song A", "artists": [{"name": "Artist A"}],
-                     "duration_seconds": 201}]
+            return [
+                {
+                    "videoId": "vid1",
+                    "title": "Song A",
+                    "artists": [{"name": "Artist A"}],
+                    "duration_seconds": 201,
+                }
+            ]
         if filter == "albums":
             return [{"browseId": "MPRE1", "title": "Greatest"}]
         return []
 
     def get_album(self, browseId):
-        return {"title": "Greatest", "artists": [{"name": "Band"}],
-                "audioPlaylistId": "OLAK5", "tracks": [
-                    {"videoId": "at1", "title": "Track 1", "duration_seconds": 180}]}
+        return {
+            "title": "Greatest",
+            "artists": [{"name": "Band"}],
+            "audioPlaylistId": "OLAK5",
+            "tracks": [{"videoId": "at1", "title": "Track 1", "duration_seconds": 180}],
+        }
 
     def create_playlist(self, title, description, privacy_status="PRIVATE", **kw):
         self.created.append(title)
@@ -154,9 +174,12 @@ class FakeYT:
 
     def add_playlist_items(self, playlistId, videoIds=None, duplicates=False):
         self.added.append((playlistId, list(videoIds or [])))
-        return {"status": "STATUS_SUCCEEDED",
-                "playlistEditResults": [{"videoId": vid, "setVideoId": f"set-{vid}"}
-                                        for vid in (videoIds or [])]}
+        return {
+            "status": "STATUS_SUCCEEDED",
+            "playlistEditResults": [
+                {"videoId": vid, "setVideoId": f"set-{vid}"} for vid in (videoIds or [])
+            ],
+        }
 
     def rate_song(self, videoId, rating):
         self.liked.append(videoId)
@@ -245,7 +268,7 @@ def test_timeout_session_injects_default_timeout(monkeypatch):
 
     monkeypatch.setattr(requests.Session, "request", fake_request)
     sess = TimeoutSession(9.0)
-    sess.request("GET", "http://example")               # no timeout -> injected
+    sess.request("GET", "http://example")  # no timeout -> injected
     sess.request("GET", "http://example", timeout=1.5)  # caller's value preserved
     assert seen == [9.0, 1.5]
 
@@ -258,9 +281,9 @@ def test_is_transient_classifies_errors():
             super().__init__("x")
             self.http_status = status
 
-    assert is_transient(WithStatus(429)) is True       # rate limited
-    assert is_transient(WithStatus(503)) is True        # server error
-    assert is_transient(WithStatus(401)) is False       # auth — deterministic
+    assert is_transient(WithStatus(429)) is True  # rate limited
+    assert is_transient(WithStatus(503)) is True  # server error
+    assert is_transient(WithStatus(401)) is False  # auth — deterministic
     assert is_transient(WithStatus(404)) is False
     assert is_transient(requests.exceptions.Timeout()) is True
     assert is_transient(requests.exceptions.ConnectionError()) is True
@@ -319,8 +342,10 @@ def test_yt_call_fails_fast_on_non_transient_error():
 # --------------------------------------------------------------------------- #
 _ITEMS = (
     ClassifyItem(SongInfo("Archangel", "Burial"), (YtCandidate("v1", "Archangel", "Burial"),)),
-    ClassifyItem(SongInfo("Ghost Voices", "Virtual Self"),
-                 (YtCandidate("v2", "Ghost Voices", "Virtual Self"),)),
+    ClassifyItem(
+        SongInfo("Ghost Voices", "Virtual Self"),
+        (YtCandidate("v2", "Ghost Voices", "Virtual Self"),),
+    ),
     ClassifyItem(SongInfo("Untitled", "Nobody"), (YtCandidate("v3", "Untitled", "Nobody"),)),
 )
 
@@ -336,11 +361,13 @@ def _envelope(verdicts: list[dict], *, is_error=False) -> str:
 
 
 def test_claude_classifier_parses_batch_envelope(monkeypatch):
-    out = _envelope([
-        {"index": 1, "decision": "accept", "video_id": "v1", "confidence": 0.9},
-        {"index": 2, "decision": "reject", "video_id": None, "confidence": 0.7},
-        {"index": 3, "decision": "accept", "video_id": "v3", "confidence": 0.95},
-    ])
+    out = _envelope(
+        [
+            {"index": 1, "decision": "accept", "video_id": "v1", "confidence": 0.9},
+            {"index": 2, "decision": "reject", "video_id": None, "confidence": 0.7},
+            {"index": 3, "decision": "accept", "video_id": "v3", "confidence": 0.95},
+        ]
+    )
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _completed(stdout=out))
     out_verdicts = ClaudeClassifier().classify_batch(_ITEMS)
     assert len(out_verdicts) == 3
@@ -355,9 +382,14 @@ def test_claude_classifier_batches_into_one_subprocess_call(monkeypatch):
 
     def fake(cmd, **kwargs):
         calls["n"] += 1
-        return _completed(stdout=_envelope(
-            [{"index": i + 1, "decision": "reject", "confidence": 0.5} for i in range(len(_ITEMS))]
-        ))
+        return _completed(
+            stdout=_envelope(
+                [
+                    {"index": i + 1, "decision": "reject", "confidence": 0.5}
+                    for i in range(len(_ITEMS))
+                ]
+            )
+        )
 
     monkeypatch.setattr(subprocess, "run", fake)
     ClaudeClassifier().classify_batch(_ITEMS)
@@ -411,9 +443,7 @@ def test_claude_classifier_timeout_is_all_uncertain(monkeypatch):
 
 
 def test_claude_classifier_nonzero_exit_is_all_uncertain(monkeypatch):
-    monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: _completed(returncode=1, stderr="boom")
-    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _completed(returncode=1, stderr="boom"))
     assert _all_uncertain(ClaudeClassifier().classify_batch(_ITEMS))
 
 

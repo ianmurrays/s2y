@@ -16,12 +16,9 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Callable
-from typing import TypeVar
-
-T = TypeVar("T")
 
 
-async def run_detached(fn: Callable[[], T]) -> T:
+async def run_detached[T](fn: Callable[[], T]) -> T:
     """Run ``fn()`` on a daemon thread and await its result.
 
     If the awaiting task is cancelled (e.g. on quit), the future is cancelled and

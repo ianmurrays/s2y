@@ -88,7 +88,10 @@ def _resolve(source: SongInfo, repo: Repository, ytmusic: YtMusicTarget) -> Matc
                 duration_s=None if row.duration_ms is None else row.duration_ms // 1000,
             )
             return MatchResult(
-                source, MatchOutcome.AUTO, cand, MatchMethod.CACHED,
+                source,
+                MatchOutcome.AUTO,
+                cand,
+                MatchMethod.CACHED,
                 row.match_confidence or 1.0,
             )
         pending = repo.get_quarantine_by_source("spotify", uri)
@@ -147,13 +150,15 @@ def _plan_track_collection(
         plan.ops.append(SyncOp(OpKind.CREATE_PLAYLIST, name, kind, collection_key=key))
     for vid in to_add:
         plan.ops.append(
-            SyncOp(op_kind, name, kind, collection_key=key,
-                   source=vid_source.get(vid), video_id=vid)
+            SyncOp(
+                op_kind, name, kind, collection_key=key, source=vid_source.get(vid), video_id=vid
+            )
         )
 
     plan.collections.append(
-        CollectionSig(key=key, name=name, kind=kind,
-                      spotify_playlist_id=spotify_playlist_id, signature=sig)
+        CollectionSig(
+            key=key, name=name, kind=kind, spotify_playlist_id=spotify_playlist_id, signature=sig
+        )
     )
 
 
@@ -190,7 +195,9 @@ def build_plan(
     }
     log.info(
         "Plan ready: %d actions, %d need review, %d unchanged",
-        len(plan.ops), len(plan.quarantine), plan.skipped,
+        len(plan.ops),
+        len(plan.quarantine),
+        plan.skipped,
     )
     on_event(PhaseFinished("plan"))
     return plan
@@ -217,18 +224,29 @@ def _plan_playlists(plan, spotify, ytmusic, repo, config, on_event, stop=_NEVER_
         persisted = repo.yt_present_video_ids(row.id) if row else set()
         live = (
             _live_dedup(
-                lambda: ytmusic.playlist_video_ids(row.yt_playlist_id), pl.name, on_event
+                lambda yt_id=row.yt_playlist_id: ytmusic.playlist_video_ids(yt_id),
+                pl.name,
+                on_event,
             )
             if row and row.yt_playlist_id
             else set()
         )
         present = persisted | live
         _plan_track_collection(
-            plan, name=pl.name, kind=CollectionKind.PLAYLIST, key=pl.id,
-            spotify_playlist_id=pl.id, sig=pl.snapshot_id or "",
-            sources=tracks, present=present, op_kind=OpKind.ADD_PLAYLIST_ITEM,
+            plan,
+            name=pl.name,
+            kind=CollectionKind.PLAYLIST,
+            key=pl.id,
+            spotify_playlist_id=pl.id,
+            sig=pl.snapshot_id or "",
+            sources=tracks,
+            present=present,
+            op_kind=OpKind.ADD_PLAYLIST_ITEM,
             emit_create=(row is None or not row.yt_playlist_id),
-            repo=repo, ytmusic=ytmusic, on_event=on_event, stop=stop,
+            repo=repo,
+            ytmusic=ytmusic,
+            on_event=on_event,
+            stop=stop,
         )
 
 
@@ -245,10 +263,20 @@ def _plan_liked_songs(plan, spotify, ytmusic, repo, on_event, stop=_NEVER_STOP) 
     persisted = repo.yt_present_video_ids(row.id) if row else set()
     live = _live_dedup(lambda: ytmusic.liked_video_ids(), "Liked Songs", on_event)
     _plan_track_collection(
-        plan, name="Liked Songs", kind=CollectionKind.LIKED_SONGS, key="liked_songs",
-        spotify_playlist_id=None, sig=sig, sources=liked,
-        present=persisted | live, op_kind=OpKind.LIKE_SONG,
-        emit_create=False, repo=repo, ytmusic=ytmusic, on_event=on_event, stop=stop,
+        plan,
+        name="Liked Songs",
+        kind=CollectionKind.LIKED_SONGS,
+        key="liked_songs",
+        spotify_playlist_id=None,
+        sig=sig,
+        sources=liked,
+        present=persisted | live,
+        op_kind=OpKind.LIKE_SONG,
+        emit_create=False,
+        repo=repo,
+        ytmusic=ytmusic,
+        on_event=on_event,
+        stop=stop,
     )
 
 
@@ -272,13 +300,20 @@ def _plan_liked_albums(plan, spotify, ytmusic, repo, on_event, stop=_NEVER_STOP)
             continue
         plan.ops.append(
             SyncOp(
-                OpKind.ADD_LIBRARY_ALBUM, "Liked Albums", CollectionKind.LIKED_ALBUMS,
+                OpKind.ADD_LIBRARY_ALBUM,
+                "Liked Albums",
+                CollectionKind.LIKED_ALBUMS,
                 collection_key="liked_albums",
                 source=SongInfo(title=alb.name, artist=alb.artist),
                 note=alb.id,
             )
         )
     plan.collections.append(
-        CollectionSig(key="liked_albums", name="Liked Albums",
-                      kind=CollectionKind.LIKED_ALBUMS, spotify_playlist_id=None, signature=sig)
+        CollectionSig(
+            key="liked_albums",
+            name="Liked Albums",
+            kind=CollectionKind.LIKED_ALBUMS,
+            spotify_playlist_id=None,
+            signature=sig,
+        )
     )
