@@ -28,6 +28,14 @@ class ApplyDone(Message):
         self.stats = stats
 
 
+class ClassifyDone(Message):
+    """The LLM judge finished a pass over the quarantine — carries the stats."""
+
+    def __init__(self, stats: dict) -> None:
+        super().__init__()
+        self.stats = stats
+
+
 class PlaylistsLoaded(Message):
     """The user's Spotify playlists, fetched off-thread for the picker screen."""
 

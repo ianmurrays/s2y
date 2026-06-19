@@ -16,6 +16,7 @@ uv sync --extra dev        # install (Python 3.12, pinned in .python-version)
 uv run pytest -q           # run the test suite (fast, no network)
 uv run s2y                 # launch the TUI
 uv run s2y --plan          # headless dry-run: print the plan, no UI, no changes
+uv run s2y --classify      # headless: claude -p LLM judge over the quarantine ([classify] enabled)
 uv build --wheel           # build (data files schema.sql + s2y.tcss are bundled)
 ```
 
@@ -31,18 +32,21 @@ src/s2y/
   session.py       wiring: build_engine() / open_repo() / is_configured()
   cli.py           argparse entry; --plan headless; logging to file ONLY (never stdout)
   core/
-    models.py      SongInfo, YtCandidate, MatchResult, SyncOp/SyncPlan, RemotePlaylist/Album  (pure)
-    ports.py       SpotifySource / YtMusicTarget Protocols (the engine's seam)
+    models.py      SongInfo, YtCandidate, MatchResult, SyncOp/SyncPlan, ClassifyItem/Verdict, …  (pure)
+    ports.py       SpotifySource / YtMusicTarget / Classifier (classify_batch) Protocols (the engine's seams)
     matching.py    normalization + scored cascade (ISRC-ready, duration-gated)  (pure)
+    classify.py    LLM-judge batch prompt builder + robust JSON-array verdict parser  (pure; no I/O)
+    resolve.py     resolve_quarantine_match(): the one shared accept path (TUI + judge)
     policy.py      ConflictPolicy (union=adds-only in v1), CircuitBreaker  (pure)
     planner.py     build_plan(): reads + matches -> SyncPlan. NO writes.
-    engine.py      Engine.build_plan / apply_plan (+ persistence, idempotency)
+    engine.py      Engine.build_plan / apply_plan / classify_quarantine (+ persistence)
     events.py      progress events; engine takes an EventSink callback  (pure)
   services/
     base.py        ServiceError, first_artist(); re-exports ports
     ratelimit.py   with_retry (backoff + 429 Retry-After), Pacer, chunked
     spotify.py     spotipy adapter (read-only in v1; paginates via sp.next)
     ytmusic.py     ytmusicapi adapter (videoId/setVideoId, rate_song/rate_playlist, search)
+    claude_classify.py  ClaudeClassifier: shells out to `claude -p`; all failures -> UNCERTAIN
   auth/
     spotify_pkce.py  SpotifyPKCE (Auth Code + PKCE, no secret); we drive the flow
                      ourselves (get_authorize_url -> own loopback catcher on the local
@@ -71,6 +75,17 @@ src/s2y/
 - **Matching:** auto-accept only ≥ `AUTO_ACCEPT` (0.82); everything else →
   **quarantine** (never guess). Duration-gated; normalization keeps meaningful
   qualifiers (Live/Remix) but strips edition tags (Remastered/feat./accents).
+- **Classifier (opt-in):** `[classify] enabled` turns on an LLM judge that re-searches
+  YT per quarantined track and asks `claude -p` to pick a match. Tracks are judged in
+  **one batched `claude -p` call per `batch_size` chunk** (default 40), not one call
+  per track — so a big backlog costs a handful of calls; the reply is a JSON array
+  mapped back per-track by index. It auto-resolves only ACCEPTs at ≥
+  `auto_accept_confidence` (0.85, above the matcher's bar) whose `video_id` is one
+  actually shown *for that track* (the parser rejects hallucinated/misindexed ids);
+  every failure → UNCERTAIN → stays quarantined. Both the TUI accept and the judge
+  resolve through the one `core/resolve.py` helper (so neither forgets
+  `invalidate_signatures`). Uses the user's existing `claude` login (no `--bare`, no
+  API key needed).
 - **union policy (v1):** adds only — nothing is ever auto-deleted.
 - **Threading:** `spotipy`/`ytmusicapi` are blocking. The TUI runs every engine
   call on a **daemon** thread (`tui/threads.py:run_detached`) inside a `@work`

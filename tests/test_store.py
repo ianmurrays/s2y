@@ -18,6 +18,38 @@ def repo() -> Repository:
     return Repository(conn, clock=lambda: f"2026-01-01T00:00:{next(counter):02d}+00:00")
 
 
+def test_resolve_quarantine_match_helper(repo: Repository):
+    """The shared accept path: verified track_map row + resolved quarantine +
+    invalidated signatures, all in one transaction (used by the TUI and LLM judge)."""
+    from s2y.core.resolve import resolve_quarantine_match
+
+    coll = repo.get_or_create_collection(
+        name="Chill", kind="playlist", spotify_playlist_id="sp1"
+    )
+    repo.update_collection(coll.id, spotify_snapshot_id="snap-1")
+    qid = repo.add_quarantine(
+        source_side="spotify", source_uri="spotify:track:7", title="Wéird Tïtle",
+        artist="Nobody", album=None, reason="low_conf",
+        best_candidate={"video_id": "vz"},
+    )
+
+    track = resolve_quarantine_match(
+        repo, quarantine_id=qid, spotify_uri="spotify:track:7", yt_video_id="vz",
+        title="Wéird Tïtle", artist="Nobody", match_method="claude",
+        match_confidence=0.9,
+    )
+
+    got = repo.get_track_by_spotify_uri("spotify:track:7")
+    assert got is not None and got.yt_video_id == "vz"
+    assert got.verified is True and got.match_method == "claude"
+    assert got.canon_title == "weird title"  # accents folded + casefolded
+    q = repo.get_quarantine_by_source("spotify", "spotify:track:7")
+    assert q["resolved"] == 1 and q["resolution_track_map_id"] == track.id
+    assert repo.count_unresolved_quarantine() == 0
+    # Signatures invalidated so the resolved track is re-examined next run.
+    assert repo.get_collection(coll.id).spotify_snapshot_id is None
+
+
 # --------------------------------------------------------------------------- #
 # track_map
 # --------------------------------------------------------------------------- #

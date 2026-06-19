@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
 
 import pytest
 import requests
 
+from s2y.core.models import ClassifyDecision, ClassifyItem, SongInfo, YtCandidate
 from s2y.services.base import ServiceError, is_transient
+from s2y.services.claude_classify import ClaudeClassifier
 from s2y.services.spotify import SpotifyClient
 from s2y.services.ytmusic import YTMusicClient
 
@@ -308,6 +312,126 @@ def test_yt_call_fails_fast_on_non_transient_error():
     with pytest.raises(KeyError):
         c._call(deterministic, "get liked songs")  # noqa: SLF001
     assert calls["n"] == 1  # one attempt, no backoff storm
+
+
+# --------------------------------------------------------------------------- #
+# Claude classifier (LLM judge) — subprocess parsing, no real `claude` spawned
+# --------------------------------------------------------------------------- #
+_ITEMS = (
+    ClassifyItem(SongInfo("Archangel", "Burial"), (YtCandidate("v1", "Archangel", "Burial"),)),
+    ClassifyItem(SongInfo("Ghost Voices", "Virtual Self"),
+                 (YtCandidate("v2", "Ghost Voices", "Virtual Self"),)),
+    ClassifyItem(SongInfo("Untitled", "Nobody"), (YtCandidate("v3", "Untitled", "Nobody"),)),
+)
+
+
+def _completed(stdout="", returncode=0, stderr=""):
+    return subprocess.CompletedProcess(
+        args=["claude"], returncode=returncode, stdout=stdout, stderr=stderr
+    )
+
+
+def _envelope(verdicts: list[dict], *, is_error=False) -> str:
+    return json.dumps({"is_error": is_error, "result": json.dumps(verdicts)})
+
+
+def test_claude_classifier_parses_batch_envelope(monkeypatch):
+    out = _envelope([
+        {"index": 1, "decision": "accept", "video_id": "v1", "confidence": 0.9},
+        {"index": 2, "decision": "reject", "video_id": None, "confidence": 0.7},
+        {"index": 3, "decision": "accept", "video_id": "v3", "confidence": 0.95},
+    ])
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _completed(stdout=out))
+    out_verdicts = ClaudeClassifier().classify_batch(_ITEMS)
+    assert len(out_verdicts) == 3
+    assert out_verdicts[0].decision is ClassifyDecision.ACCEPT and out_verdicts[0].video_id == "v1"
+    assert out_verdicts[1].decision is ClassifyDecision.REJECT
+    assert out_verdicts[2].decision is ClassifyDecision.ACCEPT and out_verdicts[2].video_id == "v3"
+
+
+def test_claude_classifier_batches_into_one_subprocess_call(monkeypatch):
+    """The whole point: N tracks => ONE `claude -p` spawn, not N."""
+    calls = {"n": 0}
+
+    def fake(cmd, **kwargs):
+        calls["n"] += 1
+        return _completed(stdout=_envelope(
+            [{"index": i + 1, "decision": "reject", "confidence": 0.5} for i in range(len(_ITEMS))]
+        ))
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    ClaudeClassifier().classify_batch(_ITEMS)
+    assert calls["n"] == 1
+
+
+def test_claude_classifier_builds_expected_command(monkeypatch):
+    captured: dict = {}
+
+    def fake(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _completed(stdout=_envelope([{"index": 1, "decision": "reject"}]))
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    ClaudeClassifier(model="haiku").classify_batch(_ITEMS[:1])
+    cmd = captured["cmd"]
+    assert cmd[:2] == ["claude", "-p"]
+    assert "--output-format" in cmd and "json" in cmd
+    assert cmd[cmd.index("--model") + 1] == "haiku"
+    assert "--tools" in cmd  # tools disabled for a fast, single-shot judgment
+
+
+def test_claude_classifier_empty_batch_skips_subprocess(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("subprocess must not be called for an empty batch")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert ClaudeClassifier().classify_batch(()) == ()
+
+
+def _all_uncertain(verdicts) -> bool:
+    return len(verdicts) == len(_ITEMS) and all(
+        v.decision is ClassifyDecision.UNCERTAIN for v in verdicts
+    )
+
+
+def test_claude_classifier_binary_missing_is_all_uncertain(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError()
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert _all_uncertain(ClaudeClassifier(claude_path="/no/such/claude").classify_batch(_ITEMS))
+
+
+def test_claude_classifier_timeout_is_all_uncertain(monkeypatch):
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=1)
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert _all_uncertain(ClaudeClassifier().classify_batch(_ITEMS))
+
+
+def test_claude_classifier_nonzero_exit_is_all_uncertain(monkeypatch):
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: _completed(returncode=1, stderr="boom")
+    )
+    assert _all_uncertain(ClaudeClassifier().classify_batch(_ITEMS))
+
+
+def test_claude_classifier_is_error_envelope_is_all_uncertain(monkeypatch):
+    out = json.dumps({"is_error": True, "result": None})
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _completed(stdout=out))
+    assert _all_uncertain(ClaudeClassifier().classify_batch(_ITEMS))
+
+
+def test_claude_classifier_no_result_field_is_all_uncertain(monkeypatch):
+    out = json.dumps({"is_error": False})
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _completed(stdout=out))
+    assert _all_uncertain(ClaudeClassifier().classify_batch(_ITEMS))
+
+
+def test_claude_classifier_non_json_stdout_is_all_uncertain(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _completed(stdout="not json"))
+    assert _all_uncertain(ClaudeClassifier().classify_batch(_ITEMS))
 
 
 def test_yt_call_translates_signed_out_into_service_error():

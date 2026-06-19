@@ -97,6 +97,43 @@ class MatchResult:
         return self.best.video_id if self.best else None
 
 
+class ClassifyDecision(str, Enum):
+    """An LLM judge's verdict on a quarantined track (see :mod:`s2y.core.classify`)."""
+
+    ACCEPT = "accept"  # one of the candidates IS this track
+    REJECT = "reject"  # none of the candidates match
+    UNCERTAIN = "uncertain"  # can't decide / parse fail / subprocess fail (safe default)
+
+
+@dataclass(frozen=True)
+class ClassifyVerdict:
+    """The structured result of classifying one quarantined track.
+
+    ``video_id`` is set only for :attr:`ClassifyDecision.ACCEPT` and is always one
+    of the candidate ids that were shown to the model (validated by the parser, so
+    a hallucinated id can never resolve a quarantine). ``reasoning`` is for logs/UI
+    only and never drives control flow.
+    """
+
+    decision: ClassifyDecision
+    video_id: str | None = None
+    confidence: float = 0.0  # [0, 1], clamped by the parser
+    reasoning: str = ""
+
+
+@dataclass(frozen=True)
+class ClassifyItem:
+    """One unit of work for the batched LLM judge: a source track paired with the
+    YouTube Music candidates it should be matched against.
+
+    The :class:`s2y.core.ports.Classifier` takes a tuple of these and returns a
+    positionally-aligned tuple of :class:`ClassifyVerdict` (one per item).
+    """
+
+    source: SongInfo
+    candidates: tuple[YtCandidate, ...]
+
+
 @dataclass(frozen=True)
 class RemotePlaylist:
     """A playlist as listed by a service (Spotify or YouTube Music)."""

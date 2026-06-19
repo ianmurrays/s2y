@@ -9,8 +9,19 @@ import pytest
 from textual.widgets import Button, SelectionList, Static
 
 from s2y.config import Config, Paths
-from s2y.core.events import Advanced, CollectionStarted, OpApplied, PhaseStarted, TrackMatched
+from s2y.core.events import (
+    Advanced,
+    ClassifyVerdictEvent,
+    CollectionStarted,
+    LogLine,
+    OpApplied,
+    PhaseFinished,
+    PhaseStarted,
+    TrackMatched,
+)
 from s2y.core.models import (
+    ClassifyDecision,
+    ClassifyVerdict,
     CollectionKind,
     MatchMethod,
     MatchOutcome,
@@ -75,6 +86,40 @@ class FakeEngine:
             on_event(Advanced(1))
         return {"applied": len(plan.ops), "failed": 0,
                 "quarantined": len(plan.quarantine), "skipped": 0}
+
+    def classify_quarantine(self, on_event=lambda e: None, *, apply=True):
+        # Mirror the engine: emit the same progress events (so the screen's bar /
+        # status / counters update) and resolve each row with a stored candidate via
+        # the shared helper (so the screen reload reflects real DB state).
+        import json
+
+        from s2y.core.resolve import resolve_quarantine_match
+
+        rows = list(self.repo.list_unresolved_quarantine())
+        on_event(PhaseStarted("classify", total=len(rows)))
+        on_event(LogLine(f"Fetching YouTube candidates — tracks 1–{len(rows)} of {len(rows)}…"))
+        on_event(LogLine(f"Asking Claude about {len(rows)} track(s)… (batch 1/1)"))
+        applied = 0
+        for row in rows:
+            raw = row["best_candidate_json"]
+            best = json.loads(raw) if raw else None
+            ok = bool(apply and best and best.get("video_id"))
+            if ok:
+                resolve_quarantine_match(
+                    self.repo, quarantine_id=row["id"], spotify_uri=row["source_uri"],
+                    yt_video_id=best["video_id"], title=row["title"],
+                    artist=row["artist"], match_method="claude", match_confidence=0.95,
+                )
+                applied += 1
+            verdict = ClassifyVerdict(
+                ClassifyDecision.ACCEPT if ok else ClassifyDecision.UNCERTAIN,
+                best["video_id"] if ok else None, 0.95 if ok else 0.0,
+            )
+            on_event(ClassifyVerdictEvent(row["title"], row["artist"], verdict, ok))
+            on_event(Advanced(1))
+        on_event(PhaseFinished("classify"))
+        return {"considered": len(rows), "accepted": applied, "rejected": 0,
+                "uncertain": 0, "applied": applied}
 
 
 def make_app(*, configured=True):
@@ -267,6 +312,75 @@ async def test_quarantine_accept_writes_mapping():
         assert resolved
         row = app.repo.get_track_by_spotify_uri("spotify:track:2")
         assert row is not None and row.yt_video_id == "vq" and row.verified is True
+
+
+@pytest.mark.asyncio
+async def test_quarantine_classify_resolves_via_engine():
+    app = make_app()
+    app.config.classify.enabled = True  # opt in
+    app.repo.add_quarantine(
+        source_side="spotify", source_uri="spotify:track:3", title="Fuzzy",
+        artist="Band", album=None, reason="low_conf",
+        best_candidate={"video_id": "vc", "title": "Fuzzy", "confidence": 0.6},
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("r")
+        await _wait(pilot, lambda: isinstance(app.screen, QuarantineScreen))
+        await pilot.pause()
+        await pilot.press("c")  # classify with AI (runs off the daemon thread)
+        done = await _wait(pilot, lambda: app.repo.count_unresolved_quarantine() == 0)
+        assert done
+        row = app.repo.get_track_by_spotify_uri("spotify:track:3")
+        assert row is not None and row.yt_video_id == "vc" and row.match_method == "claude"
+
+
+@pytest.mark.asyncio
+async def test_quarantine_classify_shows_progress():
+    from textual.widgets import ProgressBar
+
+    app = make_app()
+    app.config.classify.enabled = True
+    for i in range(3):
+        app.repo.add_quarantine(
+            source_side="spotify", source_uri=f"spotify:track:p{i}", title=f"Track {i}",
+            artist="Band", album=None, reason="low_conf",
+            best_candidate={"video_id": f"vp{i}", "title": f"Track {i}", "confidence": 0.6},
+        )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("r")
+        await _wait(pilot, lambda: isinstance(app.screen, QuarantineScreen))
+        await pilot.pause()
+        await pilot.press("c")
+        await _wait(pilot, lambda: app.repo.count_unresolved_quarantine() == 0)
+        await pilot.pause()
+        screen = app.screen
+        bar = screen.query_one("#q_bar", ProgressBar)
+        # Bar filled to total, the tally reflects every verdict, and we finished.
+        assert bar.progress == 3
+        summary = str(screen.query_one("#q_summary", Static).render())
+        assert "3 resolved" in summary
+        phase = str(screen.query_one("#q_phase", Static).render())
+        assert "complete" in phase.lower()
+
+
+@pytest.mark.asyncio
+async def test_quarantine_classify_disabled_is_a_noop():
+    app = make_app()  # classify disabled by default
+    app.repo.add_quarantine(
+        source_side="spotify", source_uri="spotify:track:4", title="Keep",
+        artist="Me", album=None, reason="low_conf",
+        best_candidate={"video_id": "vk"},
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("r")
+        await _wait(pilot, lambda: isinstance(app.screen, QuarantineScreen))
+        await pilot.pause()
+        await pilot.press("c")  # disabled → notifies, resolves nothing
+        await pilot.pause()
+        assert app.repo.count_unresolved_quarantine() == 1
 
 
 # --------------------------------------------------------------------------- #

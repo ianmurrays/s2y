@@ -126,6 +126,35 @@ def test_request_timeout_round_trips_through_config(tmp_path):
     assert Config.load(path).sync.request_timeout == 22.5
 
 
+def test_classify_config_round_trips(tmp_path):
+    cfg = Config()
+    cfg.classify.enabled = True
+    cfg.classify.model = "haiku"
+    cfg.classify.claude_path = "/usr/local/bin/claude"
+    cfg.classify.auto_accept_confidence = 0.91
+    cfg.classify.timeout_s = 30.0
+    cfg.classify.max_candidates = 4
+    cfg.classify.batch_size = 12
+    path = tmp_path / "config.toml"
+    cfg.save(path)
+    loaded = Config.load(path)
+    assert loaded.classify.enabled is True
+    assert loaded.classify.model == "haiku"
+    assert loaded.classify.claude_path == "/usr/local/bin/claude"
+    assert loaded.classify.auto_accept_confidence == 0.91
+    assert loaded.classify.timeout_s == 30.0
+    assert loaded.classify.max_candidates == 4
+    assert loaded.classify.batch_size == 12
+
+
+def test_classify_config_defaults_when_section_missing():
+    cfg = Config.from_dict({})
+    assert cfg.classify.enabled is False  # opt-in
+    assert cfg.classify.model == "sonnet"
+    assert cfg.classify.batch_size == 40
+    assert cfg.classify.timeout_s == 120.0  # a batch is one (longer) call
+
+
 def test_capture_code_returns_code_from_redirect():
     import http.client
     import socket

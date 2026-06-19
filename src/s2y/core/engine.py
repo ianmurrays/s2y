@@ -12,19 +12,22 @@ in-memory fakes.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 from collections import defaultdict
 
 from ..config import Config
-from ..services.ratelimit import Pacer, SleepFn
+from ..services.ratelimit import Pacer, SleepFn, chunked
 from ..store.repository import Repository
-from . import planner
+from . import matching, planner
 from .events import (
     Advanced,
+    ClassifyVerdictEvent,
     Event,
     EventSink,
+    LogLine,
     OpApplied,
     PhaseFinished,
     PhaseStarted,
@@ -33,16 +36,20 @@ from .events import (
 )
 from .matching import normalize_artist, normalize_title
 from .models import (
+    ClassifyDecision,
+    ClassifyItem,
     CollectionKind,
     MatchMethod,
     MatchOutcome,
     MatchResult,
     OpKind,
+    SongInfo,
     SyncOp,
     SyncPlan,
     YtCandidate,
 )
-from .ports import SpotifySource, YtMusicTarget
+from .ports import Classifier, SpotifySource, YtMusicTarget
+from .resolve import resolve_quarantine_match
 
 log = logging.getLogger(__name__)
 
@@ -57,11 +64,15 @@ class Engine:
         *,
         sleep: SleepFn = time.sleep,
         stop: threading.Event | None = None,
+        classifier: Classifier | None = None,
     ) -> None:
         self.spotify = spotify
         self.ytmusic = ytmusic
         self.repo = repo
         self.config = config
+        # Optional LLM judge for the quarantine (used by classify_quarantine). None
+        # keeps every existing call site working; the method no-ops without it.
+        self.classifier = classifier
         self._sleep = sleep
         # Cooperative cancellation: the UI sets this on quit / leaving the screen.
         # A never-set event keeps headless (CLI/test) runs running to completion.
@@ -176,6 +187,103 @@ class Engine:
         self.repo.finish_run(run_id, status, stats)
         log.info("Apply finished: %d applied, %d failed", applied, failed)
         on_event(PhaseFinished("apply"))
+        return stats
+
+    # ----- classify (LLM judge over the quarantine) ------------------------- #
+    def classify_quarantine(
+        self, on_event: EventSink = null_sink, *, apply: bool = True
+    ) -> dict:
+        """Run the LLM judge over every unresolved quarantine entry, in batches.
+
+        The quarantine is split into chunks of ``classify.batch_size``. For each
+        track we re-search YouTube Music (reusing the matcher's cascade) for a fresh
+        candidate list and union in the candidate the human would have seen; the
+        whole chunk is then judged in a *single* call to the injected
+        :class:`Classifier` (so a large backlog costs a handful of model calls, not
+        one per track). A confident ACCEPT (at or above
+        ``classify.auto_accept_confidence``) auto-resolves the quarantine via the
+        shared :func:`resolve_quarantine_match`; everything else stays for the human.
+        With ``apply=False`` nothing is resolved (a preview). The loop is cooperative
+        — it bails out promptly when ``stop`` is set, between chunks — and paced like
+        the apply loop. No-ops when no classifier is configured.
+        """
+        stats = {
+            "considered": 0, "accepted": 0, "rejected": 0,
+            "uncertain": 0, "applied": 0,
+        }
+        if self.classifier is None:
+            return stats
+
+        rows = self.repo.list_unresolved_quarantine()
+        total = len(rows)
+        on_event(PhaseStarted("classify", total=total))
+        log.info("Classifying %d quarantined track(s) with the LLM judge…", total)
+        threshold = self.config.classify.auto_accept_confidence
+        limit = self.config.classify.max_candidates
+        size = max(1, self.config.classify.batch_size)
+        n_batches = (total + size - 1) // size
+        pacer = Pacer(self.config.sync.track_sleep, sleep=self._sleep)
+
+        done = 0  # tracks gathered so far, for the "tracks lo–hi of N" narration
+        for k, chunk in enumerate(chunked(rows, size), 1):
+            if self._stop.is_set():
+                log.info("Classify: stop requested — winding down")
+                break
+
+            # Gather fresh candidates for every row in the chunk, then judge them all
+            # in one model call. Narrate each blocking window (the searches and the
+            # model call) *before* it starts so the UI never looks frozen.
+            lo, hi = done + 1, done + len(chunk)
+            done += len(chunk)
+            on_event(LogLine(
+                f"Fetching YouTube candidates — tracks {lo}–{hi} of {total}…"
+            ))
+            items: list[ClassifyItem] = []
+            for row in chunk:
+                source = _song_from_quarantine_row(row)
+                candidates = _union_stored_best(
+                    matching.match(source, self.ytmusic).candidates, row, limit=limit
+                )
+                items.append(ClassifyItem(source, candidates))
+
+            on_event(LogLine(
+                f"Asking Claude about {len(items)} track(s)… (batch {k}/{n_batches})"
+            ))
+            verdicts = self.classifier.classify_batch(tuple(items))
+
+            for row, verdict in zip(chunk, verdicts):
+                stats["considered"] += 1
+                applied = False
+                if verdict.decision is ClassifyDecision.ACCEPT:
+                    stats["accepted"] += 1
+                    if apply and verdict.video_id and verdict.confidence >= threshold:
+                        resolve_quarantine_match(
+                            self.repo,
+                            quarantine_id=row["id"],
+                            spotify_uri=row["source_uri"],
+                            yt_video_id=verdict.video_id,
+                            title=row["title"],
+                            artist=row["artist"],
+                            match_method="claude",
+                            match_confidence=verdict.confidence,
+                        )
+                        applied = True
+                        stats["applied"] += 1
+                elif verdict.decision is ClassifyDecision.REJECT:
+                    stats["rejected"] += 1
+                else:
+                    stats["uncertain"] += 1
+
+                on_event(ClassifyVerdictEvent(row["title"], row["artist"], verdict, applied))
+                on_event(Advanced(1))
+
+            pacer.wait()
+
+        log.info(
+            "Classify finished: %d considered, %d accepted, %d applied",
+            stats["considered"], stats["accepted"], stats["applied"],
+        )
+        on_event(PhaseFinished("classify"))
         return stats
 
     # ----- op application --------------------------------------------------- #
@@ -330,3 +438,47 @@ def _candidate_dict(cand: YtCandidate | None) -> dict | None:
         "album": cand.album,
         "duration_s": cand.duration_s,
     }
+
+
+def _song_from_quarantine_row(row) -> SongInfo:
+    """Reconstruct a :class:`SongInfo` from a quarantine row for re-searching.
+
+    Duration/ISRC aren't stored on the row; that's fine — the matcher still
+    returns the same candidate list, it just can't apply its own duration bonus.
+    """
+    return SongInfo(
+        title=row["title"],
+        artist=row["artist"],
+        album=row["album"] or "",
+        spotify_uri=row["source_uri"],
+    )
+
+
+def _union_stored_best(
+    candidates: tuple[YtCandidate, ...], row, *, limit: int
+) -> tuple[YtCandidate, ...]:
+    """Fresh candidates (capped at ``limit``) plus the row's stored best, if missing.
+
+    Guarantees the candidate the human would have reviewed is always among those
+    the judge sees, even if YouTube search results have since drifted.
+    """
+    out = list(candidates[:limit])
+    raw = row["best_candidate_json"]
+    if not raw:
+        return tuple(out)
+    try:
+        d = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return tuple(out)
+    vid = d.get("video_id") if isinstance(d, dict) else None
+    if vid and vid not in {c.video_id for c in out}:
+        out.append(
+            YtCandidate(
+                video_id=vid,
+                title=d.get("title", "") or "",
+                artist=d.get("artist", "") or "",
+                album=d.get("album", "") or "",
+                duration_s=d.get("duration_s"),
+            )
+        )
+    return tuple(out)

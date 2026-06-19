@@ -147,11 +147,35 @@ class CollectionsConfig:
 
 
 @dataclass
+class ClassifyConfig:
+    """Optional LLM-judge pass over the quarantine, via the ``claude`` CLI.
+
+    Opt-in (``enabled`` defaults False). When on, the engine can ask
+    ``claude -p`` to look at each quarantined track plus a fresh set of YouTube
+    Music candidates and auto-resolve the ones it is confident about — the human
+    then only reviews the remainder. Tracks are judged in batches (one model call
+    per ``batch_size`` chunk). Everything here is plain scalars so the tiny TOML
+    writer handles the section without changes.
+    """
+
+    enabled: bool = False  # master switch — the feature does nothing unless True
+    claude_path: str = "claude"  # binary name (resolved via PATH) or absolute path
+    model: str = "sonnet"  # --model alias ("sonnet"|"haiku"|"opus") or a full model id
+    # Apply Claude's ACCEPT only at/above this confidence. Kept above the matcher's
+    # AUTO_ACCEPT (0.82) so the judge clears a strictly higher bar than the scorer.
+    auto_accept_confidence: float = 0.85
+    timeout_s: float = 120.0  # per-call subprocess timeout (a batch is one call)
+    max_candidates: int = 5  # how many candidates to show Claude per track (matcher's top-5)
+    batch_size: int = 40  # tracks judged per claude -p call; huge quarantines split
+
+
+@dataclass
 class Config:
     spotify: SpotifyConfig = field(default_factory=SpotifyConfig)
     ytmusic: YtMusicConfig = field(default_factory=YtMusicConfig)
     sync: SyncConfig = field(default_factory=SyncConfig)
     collections: CollectionsConfig = field(default_factory=CollectionsConfig)
+    classify: ClassifyConfig = field(default_factory=ClassifyConfig)
 
     # ----- (de)serialization ------------------------------------------------ #
     @classmethod
@@ -174,6 +198,7 @@ class Config:
             ytmusic=section(YtMusicConfig, "ytmusic"),
             sync=section(SyncConfig, "sync"),
             collections=section(CollectionsConfig, "collections"),
+            classify=section(ClassifyConfig, "classify"),
         )
 
     def to_dict(self) -> dict:

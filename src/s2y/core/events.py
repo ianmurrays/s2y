@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .models import CollectionKind, MatchResult, SyncOp
+from .models import ClassifyVerdict, CollectionKind, MatchResult, SyncOp
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,16 @@ class OpApplied:
 
 
 @dataclass(frozen=True)
+class ClassifyVerdictEvent:
+    """The LLM judge ruled on one quarantined track (during ``classify_quarantine``)."""
+
+    title: str
+    artist: str
+    verdict: ClassifyVerdict
+    applied: bool = False  # True when a confident accept auto-resolved the quarantine
+
+
+@dataclass(frozen=True)
 class Advanced:
     """Generic progress tick for the active progress bar."""
 
@@ -87,6 +97,7 @@ Event = (
     | CollectionSkipped
     | DedupDegraded
     | TrackMatched
+    | ClassifyVerdictEvent
     | OpApplied
     | Advanced
     | LogLine

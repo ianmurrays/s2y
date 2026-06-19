@@ -76,12 +76,75 @@ def _run_headless_plan() -> int:
     return 0
 
 
+def _run_headless_classify(*, dry_run: bool) -> int:
+    """Run the LLM judge over the quarantine (no TUI). Returns an exit code.
+
+    With ``dry_run`` it prints each verdict but resolves nothing; otherwise it
+    auto-resolves the confident accepts. Requires ``[classify] enabled = true``.
+    """
+    from .core.models import ClassifyDecision
+    from .session import build_engine, is_configured
+
+    paths = default_paths()
+    config = Config.load(paths.config_file)
+    if not is_configured(config, paths):
+        print("Not set up yet. Run `s2y` and complete the setup wizard first.", file=sys.stderr)
+        return 2
+    if not config.classify.enabled:
+        print(
+            "Classification is disabled. Add to your config.toml:\n\n"
+            "  [classify]\n  enabled = true\n",
+            file=sys.stderr,
+        )
+        return 2
+
+    def on_event(event) -> None:
+        from .core.events import ClassifyVerdictEvent
+
+        if not isinstance(event, ClassifyVerdictEvent):
+            return
+        v = event.verdict
+        if v.decision is ClassifyDecision.ACCEPT:
+            mark = "✓ resolved" if event.applied else "✓ accept (kept)"
+        elif v.decision is ClassifyDecision.REJECT:
+            mark = "✗ reject (kept)"
+        else:
+            mark = "? unsure (kept)"
+        print(f"  {mark:16} {event.title} — {event.artist}  (conf {v.confidence:.2f})")
+
+    try:
+        engine = build_engine(config, paths)
+        stats = engine.classify_quarantine(on_event, apply=not dry_run)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Failed to classify: {exc}", file=sys.stderr)
+        return 1
+
+    kept = stats["accepted"] - stats["applied"]
+    print(
+        f"\nClassified {stats['considered']} track(s): {stats['applied']} auto-resolved, "
+        f"{kept} accepted-but-kept, {stats['rejected']} rejected, "
+        f"{stats['uncertain']} uncertain."
+    )
+    if dry_run:
+        print("(dry run — nothing was changed)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="s2y", description="Sync Spotify to YouTube Music")
     parser.add_argument("--version", action="version", version=f"s2y {__version__}")
     parser.add_argument(
         "--plan", action="store_true",
         help="headless dry-run: print the sync plan and exit (no UI, no changes)",
+    )
+    parser.add_argument(
+        "--classify", action="store_true",
+        help="headless: run the Claude LLM judge over quarantined tracks and "
+             "auto-resolve confident matches (requires [classify] enabled)",
+    )
+    parser.add_argument(
+        "--classify-dry-run", action="store_true",
+        help="like --classify but print verdicts only; resolve nothing",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -95,6 +158,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.plan:
         return _run_headless_plan()
+
+    if args.classify or args.classify_dry_run:
+        return _run_headless_classify(dry_run=args.classify_dry_run)
 
     from .tui import S2YApp
 

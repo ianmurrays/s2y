@@ -9,9 +9,17 @@ import pytest
 
 from s2y.config import Config
 from s2y.core.engine import Engine
-from s2y.core.events import DedupDegraded
+from s2y.core.events import (
+    Advanced,
+    DedupDegraded,
+    LogLine,
+    PhaseFinished,
+    PhaseStarted,
+)
 from s2y.core.matching import normalize_artist, normalize_title
 from s2y.core.models import (
+    ClassifyDecision,
+    ClassifyVerdict,
     CollectionKind,
     OpKind,
     RemoteAlbum,
@@ -474,3 +482,188 @@ def test_run_status_reflects_outcome(repo, config):
     eng = Engine(spotify, yt, repo3, config, sleep=NO_SLEEP, stop=stop)
     eng.apply_plan(eng.build_plan())
     assert repo3.last_run()["status"] == "aborted"
+
+
+# --------------------------------------------------------------------------- #
+# LLM quarantine judge (classify_quarantine) — with an in-memory fake classifier
+# --------------------------------------------------------------------------- #
+class FakeClassifier:
+    """Scripted verdicts keyed by source title; records titles seen + batch calls."""
+
+    def __init__(self, scripted: dict):
+        self.scripted = scripted
+        self.calls: list[str] = []  # every source title judged, flattened
+        self.batch_calls = 0  # how many times classify_batch ran (= claude -p spawns)
+
+    def classify_batch(self, items):
+        self.batch_calls += 1
+        self.calls.extend(i.source.title for i in items)
+        return tuple(
+            self.scripted.get(
+                i.source.title, ClassifyVerdict(ClassifyDecision.UNCERTAIN, None, 0.0)
+            )
+            for i in items
+        )
+
+
+def _classify_world(repo, *, verdict):
+    """A minimal world: one seeded quarantine row whose re-search finds a candidate."""
+    spotify = FakeSpotify(playlists=[], tracks={})
+    yt = FakeYT({"Obscure": cand("yvX", "Obscure", "Nobody", 200)})
+    # A collection with a stored signature, to prove invalidation on resolve.
+    coll = repo.get_or_create_collection(name="Chill", kind="playlist", spotify_playlist_id="sp1")
+    repo.update_collection(coll.id, spotify_snapshot_id="snap-1")
+    repo.add_quarantine(
+        source_side="spotify", source_uri="spotify:track:x", title="Obscure",
+        artist="Nobody", album=None, reason="low_conf",
+        best_candidate={"video_id": "yvX", "title": "Obscure", "artist": "Nobody"},
+    )
+    classifier = FakeClassifier({"Obscure": verdict})
+    eng = Engine(spotify, yt, repo, Config(), sleep=NO_SLEEP, classifier=classifier)
+    return eng, classifier, coll.id
+
+
+def test_classify_confident_accept_resolves_and_invalidates(repo):
+    eng, _, coll_id = _classify_world(
+        repo, verdict=ClassifyVerdict(ClassifyDecision.ACCEPT, "yvX", 0.95)
+    )
+    stats = eng.classify_quarantine(apply=True)
+
+    assert stats["applied"] == 1
+    assert repo.count_unresolved_quarantine() == 0
+    track = repo.get_track_by_spotify_uri("spotify:track:x")
+    assert track is not None and track.yt_video_id == "yvX"
+    assert track.match_method == "claude" and track.verified is True
+    # Signatures were invalidated so the resolved track actually syncs next run.
+    assert repo.get_collection(coll_id).spotify_snapshot_id is None
+
+
+def test_classify_below_threshold_accept_is_not_applied(repo):
+    eng, _, _ = _classify_world(
+        repo, verdict=ClassifyVerdict(ClassifyDecision.ACCEPT, "yvX", 0.50)
+    )
+    stats = eng.classify_quarantine(apply=True)
+    assert stats["accepted"] == 1 and stats["applied"] == 0
+    assert repo.count_unresolved_quarantine() == 1
+
+
+def test_classify_reject_and_uncertain_keep_quarantine(repo):
+    for verdict in (
+        ClassifyVerdict(ClassifyDecision.REJECT, None, 0.9),
+        ClassifyVerdict(ClassifyDecision.UNCERTAIN, None, 0.0),
+    ):
+        r = Repository(connect(":memory:"))
+        eng, _, _ = _classify_world(r, verdict=verdict)
+        eng.classify_quarantine(apply=True)
+        assert r.count_unresolved_quarantine() == 1
+
+
+def test_classify_dry_run_resolves_nothing(repo):
+    eng, _, _ = _classify_world(
+        repo, verdict=ClassifyVerdict(ClassifyDecision.ACCEPT, "yvX", 0.95)
+    )
+    stats = eng.classify_quarantine(apply=False)
+    assert stats["accepted"] == 1 and stats["applied"] == 0
+    assert repo.count_unresolved_quarantine() == 1
+
+
+def test_classify_stops_when_signaled(repo):
+    eng, classifier, _ = _classify_world(
+        repo, verdict=ClassifyVerdict(ClassifyDecision.ACCEPT, "yvX", 0.95)
+    )
+    eng._stop.set()  # as if the user quit before the loop began  # noqa: SLF001
+    stats = eng.classify_quarantine(apply=True)
+    assert stats["considered"] == 0
+    assert classifier.calls == []  # never asked the model
+    assert repo.count_unresolved_quarantine() == 1
+
+
+def test_classify_without_classifier_is_a_noop(repo, config):
+    spotify, yt = make_world(with_quarantine=True)
+    eng = Engine(spotify, yt, repo, config, sleep=NO_SLEEP)  # no classifier
+    eng.apply_plan(eng.build_plan())
+    before = repo.count_unresolved_quarantine()
+    stats = eng.classify_quarantine(apply=True)
+    assert stats == {"considered": 0, "accepted": 0, "rejected": 0,
+                     "uncertain": 0, "applied": 0}
+    assert repo.count_unresolved_quarantine() == before
+
+
+def test_classify_judges_a_whole_quarantine_in_one_batch_call(repo):
+    """Three quarantined rows are judged in a SINGLE classifier call (the win)."""
+    spotify = FakeSpotify(playlists=[], tracks={})
+    yt = FakeYT({
+        "Obscure": cand("yv1", "Obscure", "Nobody", 200),
+        "Hidden": cand("yv2", "Hidden", "Someone", 210),
+        "Buried": cand("yv3", "Buried", "Anon", 220),
+    })
+    for uri, title, vid in [
+        ("spotify:track:1", "Obscure", "yv1"),
+        ("spotify:track:2", "Hidden", "yv2"),
+        ("spotify:track:3", "Buried", "yv3"),
+    ]:
+        repo.add_quarantine(
+            source_side="spotify", source_uri=uri, title=title, artist="Nobody",
+            album=None, reason="low_conf", best_candidate={"video_id": vid},
+        )
+    classifier = FakeClassifier({
+        "Obscure": ClassifyVerdict(ClassifyDecision.ACCEPT, "yv1", 0.95),
+        "Hidden": ClassifyVerdict(ClassifyDecision.REJECT, None, 0.8),
+        "Buried": ClassifyVerdict(ClassifyDecision.ACCEPT, "yv3", 0.9),
+    })
+    eng = Engine(spotify, yt, repo, Config(), sleep=NO_SLEEP, classifier=classifier)
+
+    stats = eng.classify_quarantine(apply=True)
+
+    assert classifier.batch_calls == 1  # ONE claude -p for all three tracks
+    assert stats["considered"] == 3 and stats["applied"] == 2
+    assert repo.count_unresolved_quarantine() == 1  # the rejected one stays
+
+
+def test_classify_splits_into_chunks_by_batch_size(repo):
+    """A quarantine larger than batch_size splits into multiple calls."""
+    spotify = FakeSpotify(playlists=[], tracks={})
+    yt = FakeYT({f"T{i}": cand(f"v{i}", f"T{i}", "A", 200) for i in range(5)})
+    for i in range(5):
+        repo.add_quarantine(
+            source_side="spotify", source_uri=f"spotify:track:{i}", title=f"T{i}",
+            artist="A", album=None, reason="low_conf",
+        )
+    classifier = FakeClassifier({})  # all UNCERTAIN — nothing resolved
+    cfg = Config()
+    cfg.classify.batch_size = 2
+    eng = Engine(spotify, yt, repo, cfg, sleep=NO_SLEEP, classifier=classifier)
+
+    stats = eng.classify_quarantine(apply=True)
+
+    assert classifier.batch_calls == 3  # 2 + 2 + 1
+    assert stats["considered"] == 5
+    assert repo.count_unresolved_quarantine() == 5
+
+
+def test_classify_emits_progress_narration(repo):
+    """The judge narrates each blocking window so the TUI never looks frozen."""
+    spotify = FakeSpotify(playlists=[], tracks={})
+    yt = FakeYT({f"T{i}": cand(f"v{i}", f"T{i}", "A", 200) for i in range(3)})
+    for i in range(3):
+        repo.add_quarantine(
+            source_side="spotify", source_uri=f"spotify:track:{i}", title=f"T{i}",
+            artist="A", album=None, reason="low_conf",
+        )
+    classifier = FakeClassifier({})
+    cfg = Config()
+    cfg.classify.batch_size = 2  # -> 2 batches over 3 tracks
+    eng = Engine(spotify, yt, repo, cfg, sleep=NO_SLEEP, classifier=classifier)
+
+    events: list = []
+    eng.classify_quarantine(events.append, apply=True)
+
+    starts = [e for e in events if isinstance(e, PhaseStarted) and e.phase == "classify"]
+    assert starts and starts[0].total == 3
+    logs = [e.message for e in events if isinstance(e, LogLine)]
+    assert any(m.startswith("Fetching YouTube candidates") for m in logs)
+    assert any(m.startswith("Asking Claude") for m in logs)
+    assert any("batch 1/2" in m for m in logs) and any("batch 2/2" in m for m in logs)
+    # One progress tick per track, and the phase is closed out.
+    assert sum(e.amount for e in events if isinstance(e, Advanced)) == 3
+    assert any(isinstance(e, PhaseFinished) and e.phase == "classify" for e in events)

@@ -62,6 +62,6 @@ ProgressBar {
     margin: 1 0;
 }
 
-#summary, #phase, #mode {
+#summary, #phase, #mode, #q_phase, #q_summary {
     height: auto;
 }

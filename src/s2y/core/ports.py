@@ -14,7 +14,14 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .models import RemoteAlbum, RemotePlaylist, SongInfo, YtCandidate
+from .models import (
+    ClassifyItem,
+    ClassifyVerdict,
+    RemoteAlbum,
+    RemotePlaylist,
+    SongInfo,
+    YtCandidate,
+)
 
 
 class SpotifySource(Protocol):
@@ -60,3 +67,20 @@ class YtMusicTarget(Protocol):
 
     def like_album(self, artist: str, album: str) -> str | None:
         """Find the album and add it to the library. Returns its browseId, or None."""
+
+
+class Classifier(Protocol):
+    """An LLM judge for quarantined tracks (implemented by ``services.claude_classify``).
+
+    Given a batch of :class:`ClassifyItem` (each a source track plus its YouTube
+    Music candidates), returns one structured verdict per item, **positionally
+    aligned** with the input (``len(out) == len(items)``). Batching lets the adapter
+    judge a whole quarantine in a single model call. Implementations must never
+    raise: any failure (binary missing, timeout, bad output) becomes an
+    :attr:`ClassifyDecision.UNCERTAIN` verdict so the affected tracks simply stay
+    quarantined.
+    """
+
+    def classify_batch(
+        self, items: tuple[ClassifyItem, ...]
+    ) -> tuple[ClassifyVerdict, ...]: ...
