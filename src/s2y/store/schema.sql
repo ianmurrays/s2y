@@ -25,6 +25,25 @@ CREATE TABLE IF NOT EXISTS track_map (
 CREATE INDEX IF NOT EXISTS idx_track_map_video ON track_map(yt_video_id);
 CREATE INDEX IF NOT EXISTS idx_track_map_isrc  ON track_map(isrc);
 
+-- The REVERSE identity cache (YouTube Music -> Spotify), the twin of track_map.
+-- track_map is forward-keyed (spotify_uri UNIQUE); reverse sync needs the opposite
+-- anchor: one YT video resolves to exactly one Spotify track, so yt_video_id is the
+-- PRIMARY KEY here. Two distinct YT videos may legitimately resolve to the same
+-- Spotify track, so spotify_uri is NOT unique. Keeping the reverse cache in its own
+-- table means reverse writes can never clobber a forward mapping (and vice versa).
+CREATE TABLE IF NOT EXISTS reverse_map (
+    yt_video_id      TEXT PRIMARY KEY,
+    spotify_uri      TEXT NOT NULL,
+    canon_title      TEXT NOT NULL,
+    canon_artist     TEXT NOT NULL,
+    match_method     TEXT NOT NULL,
+    match_confidence REAL NOT NULL DEFAULT 0,
+    verified         INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reverse_map_uri ON reverse_map(spotify_uri);
+
 -- Pairs a logical collection across services. Playlists key on
 -- spotify_playlist_id; Liked Songs / Liked Albums are singletons keyed by kind.
 CREATE TABLE IF NOT EXISTS playlist_map (
@@ -41,6 +60,8 @@ CREATE TABLE IF NOT EXISTS playlist_map (
 -- At most one liked_songs row and one liked_albums row.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_map_singleton
     ON playlist_map(kind) WHERE kind != 'playlist';
+-- Reverse sync anchors playlist collections on the YT id, so index that lookup.
+CREATE INDEX IF NOT EXISTS idx_playlist_map_yt ON playlist_map(yt_playlist_id);
 
 -- Desired-state membership; covers playlists AND the liked pseudo-collections.
 -- yt_set_video_id is captured at insert time and is required to *remove* a YT

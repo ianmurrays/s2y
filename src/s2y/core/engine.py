@@ -36,20 +36,23 @@ from .events import (
 )
 from .matching import normalize_artist, normalize_title
 from .models import (
+    FORWARD,
     ClassifyDecision,
     ClassifyItem,
     CollectionKind,
+    Direction,
     MatchMethod,
     MatchOutcome,
     MatchResult,
     OpKind,
+    Side,
     SongInfo,
     SyncOp,
     SyncPlan,
     YtCandidate,
 )
-from .ports import Classifier, SpotifySource, YtMusicTarget
-from .resolve import resolve_quarantine_match
+from .ports import Classifier, MusicSource, MusicTarget
+from .resolve import link_track_map, resolve_quarantine_match
 
 log = logging.getLogger(__name__)
 
@@ -57,17 +60,29 @@ log = logging.getLogger(__name__)
 class Engine:
     def __init__(
         self,
-        spotify: SpotifySource,
-        ytmusic: YtMusicTarget,
+        spotify: MusicSource,
+        ytmusic: MusicTarget,
         repo: Repository,
         config: Config,
         *,
+        direction: Direction = FORWARD,
         sleep: SleepFn = time.sleep,
         stop: threading.Event | None = None,
         classifier: Classifier | None = None,
     ) -> None:
+        # The two adapters keep their Spotify/YT names (both implement both roles);
+        # ``direction`` decides which is read (source) and which is written (target).
         self.spotify = spotify
         self.ytmusic = ytmusic
+        self.direction = direction
+        if direction.source == Side.SPOTIFY:
+            self._source, self._target = spotify, ytmusic
+        else:
+            self._source, self._target = ytmusic, spotify  # type: ignore[assignment]
+        # Public role views (the TUI's playlist picker lists engine.source).
+        self.source: MusicSource = self._source
+        self.target: MusicTarget = self._target
+        self._search = self._target  # the matcher's search surface is the target catalogue
         self.repo = repo
         self.config = config
         # Optional LLM judge for the quarantine (used by classify_quarantine). None
@@ -77,7 +92,7 @@ class Engine:
         # Cooperative cancellation: the UI sets this on quit / leaving the screen.
         # A never-set event keeps headless (CLI/test) runs running to completion.
         self._stop = stop if stop is not None else threading.Event()
-        self._yt_playlist_ids: dict[str, str] = {}  # collection_key -> yt playlist id
+        self._target_playlist_ids: dict[str, str] = {}  # collection_key -> target playlist id
         self._coll_ids: dict[str, int] = {}  # collection_key -> playlist_map row id
 
     # ----- planning --------------------------------------------------------- #
@@ -95,10 +110,11 @@ class Engine:
         """
         if not persist_matches:
             return planner.build_plan(
-                spotify=self.spotify,
-                ytmusic=self.ytmusic,
+                source=self._source,
+                target=self._target,
                 repo=self.repo,
                 config=self.config,
+                direction=self.direction,
                 on_event=on_event,
                 stop=self._stop,
             )
@@ -106,7 +122,7 @@ class Engine:
         buffer: list[MatchResult] = []
 
         def flush() -> None:
-            fresh = [m for m in buffer if m.source.spotify_uri]
+            fresh = [m for m in buffer if m.source.source_ref(self.direction.source)]
             buffer.clear()
             if not fresh:
                 return
@@ -130,10 +146,11 @@ class Engine:
                         flush()
 
         plan = planner.build_plan(
-            spotify=self.spotify,
-            ytmusic=self.ytmusic,
+            source=self._source,
+            target=self._target,
             repo=self.repo,
             config=self.config,
+            direction=self.direction,
             on_event=sink,
             stop=self._stop,
         )
@@ -227,7 +244,14 @@ class Engine:
         if self.classifier is None:
             return stats
 
-        rows = self.repo.list_unresolved_quarantine()
+        # Only judge quarantines from THIS direction's source side: a reverse-direction
+        # engine searches Spotify, a forward one searches YouTube — judging the wrong
+        # side would re-search the wrong catalogue.
+        rows = [
+            r
+            for r in self.repo.list_unresolved_quarantine()
+            if r["source_side"] == self.direction.source.value
+        ]
         total = len(rows)
         on_event(PhaseStarted("classify", total=total))
         log.info("Classifying %d quarantined track(s) with the LLM judge…", total)
@@ -253,7 +277,7 @@ class Engine:
             for row in chunk:
                 source = _song_from_quarantine_row(row)
                 candidates = _union_stored_best(
-                    matching.match(source, self.ytmusic).candidates, row, limit=limit
+                    matching.match(source, self._search).candidates, row, limit=limit
                 )
                 items.append(ClassifyItem(source, candidates))
 
@@ -269,8 +293,9 @@ class Engine:
                         resolve_quarantine_match(
                             self.repo,
                             quarantine_id=row["id"],
-                            spotify_uri=row["source_uri"],
-                            yt_video_id=verdict.video_id,
+                            source_side=row["source_side"],
+                            source_uri=row["source_uri"],
+                            target_id=verdict.video_id,
                             title=row["title"],
                             artist=row["artist"],
                             match_method="claude",
@@ -302,57 +327,69 @@ class Engine:
         """Apply one op. Returns the ``setVideoId`` for a playlist add (needed to
         remove it later in Phase 3), else ``None``."""
         if op.kind is OpKind.CREATE_PLAYLIST:
-            self._yt_playlist_ids[op.collection_key] = self.ytmusic.get_or_create_playlist(
+            self._target_playlist_ids[op.collection_key] = self._target.get_or_create_playlist(
                 op.collection
             )
         elif op.kind is OpKind.ADD_PLAYLIST_ITEM:
             pid = self._playlist_id(op)
             if op.video_id:
-                set_ids = self.ytmusic.add_playlist_items(pid, [op.video_id])
+                set_ids = self._target.add_playlist_items(pid, [op.video_id])
                 return set_ids.get(op.video_id)
         elif op.kind is OpKind.LIKE_SONG:
             if op.video_id:
-                self.ytmusic.like_song(op.video_id)
+                self._target.like_song(op.video_id)
         elif op.kind is OpKind.ADD_LIBRARY_ALBUM:
             artist = op.source.artist if op.source else ""
             album = op.source.title if op.source else op.collection
-            self.ytmusic.like_album(artist, album)
+            self._target.like_album(artist, album)
         else:  # pragma: no cover - exhaustive
             raise ValueError(f"unknown op kind: {op.kind}")
         return None
 
     def _playlist_id(self, op: SyncOp) -> str:
-        pid = self._yt_playlist_ids.get(op.collection_key)
+        pid = self._target_playlist_ids.get(op.collection_key)
         if pid is None:
-            pid = self.ytmusic.get_or_create_playlist(op.collection)
-            self._yt_playlist_ids[op.collection_key] = pid
+            pid = self._target.get_or_create_playlist(op.collection)
+            self._target_playlist_ids[op.collection_key] = pid
         return pid
 
     def _record_landed(self, op: SyncOp, set_video_id: str | None) -> None:
         """Record that a track op landed on YT in the ``playlist_membership`` ledger.
 
-        ``track_map`` is the identity cache ("we know the videoId"); membership is
-        the landed-on-YT ledger ("it is actually there"). Recording it after the add
-        succeeds — never before — means a failed/never-reached add leaves no
-        membership row, so the next run re-proposes it; dedup is driven by membership
-        ∪ live YT, never by the (eagerly written) cache. Best-effort: a bookkeeping
-        slip must never fail an otherwise-successful apply, so it is fully guarded.
-        Albums dedupe via ``library_album_keys()`` and carry no membership row.
+        The identity cache (``track_map``/``reverse_map``) means "we know the target
+        id"; membership is the landed-on-target ledger ("it is actually there").
+        Recording it after the add succeeds — never before — means a failed/never-
+        reached add leaves no membership row, so the next run re-proposes it; dedup is
+        driven by membership ∪ live target, never by the (eagerly written) cache.
+        Best-effort: a bookkeeping slip must never fail an otherwise-successful apply,
+        so it is fully guarded. Albums dedupe via ``present_album_keys()`` and carry no
+        membership row. Membership always keys on the track's ``track_map`` row (by its
+        Spotify uri), which the reverse cache write guarantees exists.
         """
         if op.kind not in (OpKind.ADD_PLAYLIST_ITEM, OpKind.LIKE_SONG):
             return
         src = op.source
-        if src is None or not src.spotify_uri:
+        if src is None:
+            return
+        # The track_map row is keyed by Spotify uri in both directions: forward that is
+        # the source ref; reverse it is the target id (op.video_id).
+        spotify_uri = src.spotify_uri if self.direction.source == Side.SPOTIFY else op.video_id
+        if not spotify_uri:
             return
         try:
-            track = self.repo.get_track_by_spotify_uri(src.spotify_uri)
+            track = self.repo.get_track_by_spotify_uri(spotify_uri)
             if track is None:
                 return
             coll_id = self._collection_id(op)
             with self.repo.transaction():
-                self.repo.upsert_membership(
-                    coll_id, track.id, present_yt=True, yt_set_video_id=set_video_id
-                )
+                if self.direction.target == Side.YT:
+                    self.repo.upsert_membership(
+                        coll_id, track.id, present_yt=True, yt_set_video_id=set_video_id
+                    )
+                else:
+                    self.repo.upsert_membership(
+                        coll_id, track.id, present_spotify=True, spotify_added_at=src.added_at
+                    )
         except Exception as exc:  # noqa: BLE001 — bookkeeping must not abort the run
             log.warning("could not record membership for %s: %s", op.describe(), exc)
 
@@ -361,31 +398,69 @@ class Engine:
         cached = self._coll_ids.get(op.collection_key)
         if cached is not None:
             return cached
-        spotify_pl_id = op.collection_key if op.collection_kind is CollectionKind.PLAYLIST else None
-        coll = self.repo.get_or_create_collection(
-            name=op.collection,
-            kind=op.collection_kind.value,
-            spotify_playlist_id=spotify_pl_id,
-        )
+        if op.collection_kind is not CollectionKind.PLAYLIST:
+            coll = self.repo.get_or_create_collection(
+                name=op.collection, kind=op.collection_kind.value
+            )
+        elif self.direction.source == Side.SPOTIFY:
+            coll = self.repo.get_or_create_collection(
+                name=op.collection, kind="playlist", spotify_playlist_id=op.collection_key
+            )
+        else:
+            coll = self.repo.get_or_create_collection(
+                name=op.collection, kind="playlist", yt_playlist_id=op.collection_key
+            )
         self._coll_ids[op.collection_key] = coll.id
         return coll.id
 
     # ----- persistence ------------------------------------------------------ #
     def _cache_match(self, m: MatchResult) -> None:
-        """Upsert one resolved match into ``track_map``. Caller owns the transaction."""
-        if not m.source.spotify_uri:
+        """Upsert one resolved match into the identity cache. Caller owns the transaction.
+
+        Forward writes ``track_map`` keyed on the Spotify uri. Reverse writes
+        ``reverse_map`` keyed on the YouTube videoId (its own unique anchor, so it can
+        never clobber a forward mapping), and *additionally* links the pair into
+        ``track_map`` for membership/forward reuse via the shared
+        :func:`s2y.core.resolve.link_track_map` (which holds the no-clobber guard).
+        """
+        ref = m.source.source_ref(self.direction.source)
+        if not ref or not m.video_id:
             return
-        self.repo.upsert_track(
-            spotify_uri=m.source.spotify_uri,
-            yt_video_id=m.video_id,
-            canon_title=normalize_title(m.source.title),
-            canon_artist=normalize_artist(m.source.artist),
-            isrc=m.source.isrc,
-            duration_ms=m.source.duration_ms,
-            match_method=m.method.value,
-            match_confidence=m.confidence,
-            verified=(m.method is MatchMethod.MANUAL),
-        )
+        verified = m.method is MatchMethod.MANUAL
+        if self.direction.source == Side.SPOTIFY:
+            self.repo.upsert_track(
+                spotify_uri=ref,
+                yt_video_id=m.video_id,
+                canon_title=normalize_title(m.source.title),
+                canon_artist=normalize_artist(m.source.artist),
+                isrc=m.source.isrc,
+                duration_ms=m.source.duration_ms,
+                match_method=m.method.value,
+                match_confidence=m.confidence,
+                verified=verified,
+            )
+        else:
+            # ref is the YouTube videoId (source); m.video_id is the Spotify uri (target).
+            self.repo.upsert_reverse(
+                yt_video_id=ref,
+                spotify_uri=m.video_id,
+                canon_title=normalize_title(m.source.title),
+                canon_artist=normalize_artist(m.source.artist),
+                match_method=m.method.value,
+                match_confidence=m.confidence,
+                verified=verified,
+            )
+            link_track_map(
+                self.repo,
+                spotify_uri=m.video_id,
+                yt_video_id=ref,
+                canon_title=normalize_title(m.source.title),
+                canon_artist=normalize_artist(m.source.artist),
+                duration_ms=m.source.duration_ms,
+                match_method=m.method.value,
+                match_confidence=m.confidence,
+                verified=verified,
+            )
 
     def _persist_matches(self, plan: SyncPlan) -> None:
         if not plan.matches:
@@ -400,8 +475,8 @@ class Engine:
         with self.repo.transaction():
             for q in plan.quarantine:
                 self.repo.add_quarantine(
-                    source_side="spotify",
-                    source_uri=q.source.spotify_uri,
+                    source_side=self.direction.source.value,
+                    source_uri=q.source.source_ref(self.direction.source),
                     title=q.source.title,
                     artist=q.source.artist,
                     album=q.source.album or None,
@@ -413,31 +488,48 @@ class Engine:
         """Record collection mappings; store the change-detect signature only on
         full success.
 
-        We always persist the ``yt_playlist_id`` mapping (even on partial failure)
-        so the next run can dedupe against the live YT playlist and not re-add what
-        already landed. But the source signature is stored only when every op
+        We always persist the target playlist-id mapping (even on partial failure)
+        so the next run can dedupe against the live target playlist and not re-add
+        what already landed. But the source signature is stored only when every op
         succeeded — otherwise the next run must reprocess the collection to retry
         the failed adds (a failed add must not hide behind 'nothing changed').
         """
         with self.repo.transaction():
             for cs in plan.collections:
-                coll = self.repo.get_or_create_collection(
-                    name=cs.name,
-                    kind=cs.kind.value,
-                    spotify_playlist_id=cs.spotify_playlist_id,
-                )
+                if self.direction.source == Side.SPOTIFY:
+                    coll = self.repo.get_or_create_collection(
+                        name=cs.name, kind=cs.kind.value, spotify_playlist_id=cs.spotify_playlist_id
+                    )
+                else:
+                    coll = self.repo.get_or_create_collection(
+                        name=cs.name, kind=cs.kind.value, yt_playlist_id=cs.yt_playlist_id
+                    )
                 updates: dict[str, str] = {}
-                yt_id = self._yt_playlist_ids.get(cs.key)
-                if yt_id:
-                    updates["yt_playlist_id"] = yt_id
+                target_pl_id = self._target_playlist_ids.get(cs.key)
+                if target_pl_id:
+                    if self.direction.target == Side.YT:
+                        # yt_playlist_id has no UNIQUE constraint — always safe to write.
+                        updates["yt_playlist_id"] = target_pl_id
+                    else:
+                        # spotify_playlist_id is UNIQUE. A reverse YT playlist whose name
+                        # matches an existing Spotify playlist resolves (by name) to an id
+                        # that another collection row may already own — claiming it here
+                        # would crash the whole apply on the unique constraint. Only write
+                        # it when this row already owns it or nobody does; otherwise leave
+                        # it NULL and let dedup fall back to membership ∪ a live read by name.
+                        owner = self.repo.get_collection_by_spotify_id(target_pl_id)
+                        if owner is None or owner.id == coll.id:
+                            updates["spotify_playlist_id"] = target_pl_id
                 clean = not failures.get(cs.key)
                 if clean:
-                    updates["spotify_snapshot_id"] = cs.signature
+                    updates[self.direction.source_sig_col] = cs.signature
                 if updates:
                     self.repo.update_collection(coll.id, **updates)
                 if clean:
                     # A source snapshot gives Phase 2's diff a base to compare against.
-                    self.repo.save_snapshot("spotify", coll.id, {"signature": cs.signature})
+                    self.repo.save_snapshot(
+                        self.direction.source.value, coll.id, {"signature": cs.signature}
+                    )
 
 
 def _candidate_dict(cand: YtCandidate | None) -> dict | None:
@@ -455,14 +547,17 @@ def _candidate_dict(cand: YtCandidate | None) -> dict | None:
 def _song_from_quarantine_row(row) -> SongInfo:
     """Reconstruct a :class:`SongInfo` from a quarantine row for re-searching.
 
-    Duration/ISRC aren't stored on the row; that's fine — the matcher still
-    returns the same candidate list, it just can't apply its own duration bonus.
+    The source ref goes into the field matching the row's ``source_side`` so the
+    rebuilt song is honest about its origin. Duration/ISRC aren't stored on the row;
+    that's fine — the matcher still returns the same candidate list, it just can't
+    apply its own duration bonus.
     """
+    ref_field = "spotify_uri" if row["source_side"] == Side.SPOTIFY else "yt_video_id"
     return SongInfo(
         title=row["title"],
         artist=row["artist"],
         album=row["album"] or "",
-        spotify_uri=row["source_uri"],
+        **{ref_field: row["source_uri"]},
     )
 
 

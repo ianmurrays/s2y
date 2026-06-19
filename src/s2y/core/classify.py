@@ -47,6 +47,18 @@ def _candidate_line(label: str, c: YtCandidate) -> str:
     )
 
 
+def _service_labels(items: tuple[ClassifyItem, ...]) -> tuple[str, str]:
+    """Infer (source, target) service names for the batch from its source tracks.
+
+    A whole batch shares one direction; a reverse-sourced track carries a
+    ``yt_video_id`` (and no ``spotify_uri``), a forward one the opposite.
+    """
+    src = items[0].source if items else None
+    if src is not None and src.yt_video_id is not None and src.spotify_uri is None:
+        return "YouTube Music", "Spotify"
+    return "Spotify", "YouTube Music"
+
+
 def build_batch_prompt(items: tuple[ClassifyItem, ...]) -> str:
     """Render the single-shot instruction for a whole batch of quarantined tracks.
 
@@ -58,6 +70,7 @@ def build_batch_prompt(items: tuple[ClassifyItem, ...]) -> str:
     be copied verbatim from one of *that track's* candidates.
     """
     n = len(items)
+    source_label, target_label = _service_labels(items)
     lines = [
         "You are matching songs from one music service to the correct recording on "
         "another. For EACH source track below, decide which candidate, if any, is the "
@@ -73,12 +86,12 @@ def build_batch_prompt(items: tuple[ClassifyItem, ...]) -> str:
             "",
             "========================================",
             f"TRACK [{idx}]",
-            "  Source (from Spotify):",
+            f"  Source (from {source_label}):",
             f"    Title:  {src.title}",
             f"    Artist: {src.artist}",
             f"    Album:  {src.album or 'unknown'}",
             f"    Length: {_fmt_duration(src.duration_s)}",
-            "  Candidates (from YouTube Music):",
+            f"  Candidates (from {target_label}):",
         ]
         if item.candidates:
             for j, c in enumerate(item.candidates, 1):

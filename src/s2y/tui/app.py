@@ -10,7 +10,8 @@ from textual.app import App
 
 from ..config import Config, Paths, default_paths
 from ..core.engine import Engine
-from ..session import build_engine, is_configured, open_repo
+from ..core.models import Direction
+from ..session import build_engine, direction_from_config, is_configured, open_repo
 from ..store.repository import Repository
 
 log = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ EngineFactory = Callable[[], Engine]
 class S2YApp(App):
     CSS_PATH = "s2y.tcss"
     TITLE = "s2y"
-    SUB_TITLE = "Spotify → YouTube Music sync"
+    SUB_TITLE = "Spotify ⇄ YouTube Music sync"
     BINDINGS = [("q", "quit", "Quit")]
 
     def __init__(
@@ -40,8 +41,13 @@ class S2YApp(App):
         # Cooperative-cancellation signal: set on quit / leaving the sync screen so
         # in-flight engine work (running on a daemon thread) winds down promptly.
         self.stop = threading.Event()
+        # Which direction the next-built engine syncs. Picked per-run from the
+        # dashboard; defaults to the configured direction.
+        self._pending_direction: Direction = direction_from_config(self.config)
         self._engine_factory = engine_factory or (
-            lambda: build_engine(self.config, self.paths, stop=self.stop)
+            lambda: build_engine(
+                self.config, self.paths, direction=self._pending_direction, stop=self.stop
+            )
         )
         self._engine: Engine | None = None
         self._configured_override = configured
@@ -53,6 +59,22 @@ class S2YApp(App):
             self._engine = self._engine_factory()
         return self._engine
 
+    def make_engine(self, direction: Direction) -> Engine:
+        """Build a fresh engine bound to ``direction`` (used by the sync/review screens).
+
+        Rebuilds rather than reusing the cached one so a per-run direction choice (or
+        a "both ways" run that needs two engines) always gets the right roles. Does NOT
+        leave the per-run engine cached as the default, nor leave ``_pending_direction``
+        flipped — so a later plain ``engine()`` (e.g. status) reflects config, not the
+        last run.
+        """
+        self._pending_direction = direction
+        self.reset_engine()
+        engine = self.engine()
+        self._pending_direction = direction_from_config(self.config)
+        self._engine = None
+        return engine
+
     def reset_engine(self) -> None:
         self._engine = None
 
@@ -63,6 +85,8 @@ class S2YApp(App):
 
     def save_config(self) -> None:
         self.config.save(self.paths.config_file)
+        # Keep the default-built engine in sync with a changed default direction.
+        self._pending_direction = direction_from_config(self.config)
         self.reset_engine()  # config changed; rebuild clients next time
 
     # ----- shutdown --------------------------------------------------------- #

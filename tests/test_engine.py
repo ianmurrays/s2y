@@ -81,13 +81,13 @@ class FakeYT:
     def list_playlists(self):
         return [RemotePlaylist(id=i, name=n) for n, i in self._pl_name_to_id.items()]
 
-    def playlist_video_ids(self, pid):
+    def present_playlist_ids(self, pid):
         return set(self._pl_contents.get(pid, set()))
 
-    def liked_video_ids(self):
+    def present_liked_ids(self):
         return set(self._liked)
 
-    def library_album_keys(self):
+    def present_album_keys(self):
         return set(self._album_keys)
 
     def search_songs(self, query, *, limit=6):
@@ -426,7 +426,7 @@ def test_resume_dedups_via_membership_when_live_read_empty(repo, config):
     )
 
     # Simulate a live read that knows nothing (signed back in, cache cold).
-    yt.playlist_video_ids = lambda pid: set()
+    yt.present_playlist_ids = lambda pid: set()
     plan2 = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
     add_ids = [op.video_id for op in plan2.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
     assert "yv1" not in add_ids  # known-landed via membership — NOT re-added
@@ -443,7 +443,7 @@ def test_live_dedup_failure_degrades_instead_of_aborting(repo, config):
     def boom(pid):
         raise RuntimeError("signinendpoint: please sign in")
 
-    yt.playlist_video_ids = boom
+    yt.present_playlist_ids = boom
     spotify._playlists = [RemotePlaylist(id="sp1", name="Chill", count=2, snapshot_id="snap-2")]
 
     events: list = []

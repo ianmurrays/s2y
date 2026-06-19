@@ -43,7 +43,7 @@ def _configure_logging(paths, *, verbose: bool = False) -> None:
 def _run_headless_plan() -> int:
     """Build and print a plan without applying (no TUI). Returns an exit code."""
     from .core.events import CollectionSkipped, CollectionStarted, TrackMatched
-    from .session import build_engine, is_configured
+    from .session import build_engine, directions_for, is_configured
 
     paths = default_paths()
     config = Config.load(paths.config_file)
@@ -64,17 +64,19 @@ def _run_headless_plan() -> int:
                 f"  {mark} {r.source.title} — {r.source.artist}  ->  {target} ({r.confidence:.2f})"
             )
 
-    try:
-        engine = build_engine(config, paths)
-        plan = engine.build_plan(on_event)
-    except Exception as exc:  # noqa: BLE001
-        print(f"Failed to build plan: {exc}", file=sys.stderr)
-        return 1
-
-    print(
-        f"\nPlan: {len(plan.ops)} actions, {len(plan.quarantine)} need review, "
-        f"{plan.skipped} unchanged. (dry run — nothing was changed)"
-    )
+    # A "both" config plans both legs; single-direction configs plan one.
+    for direction in directions_for(config):
+        print(f"\n# Direction: {direction.source.value} -> {direction.target.value}")
+        try:
+            engine = build_engine(config, paths, direction=direction)
+            plan = engine.build_plan(on_event)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Failed to build plan: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"\nPlan: {len(plan.ops)} actions, {len(plan.quarantine)} need review, "
+            f"{plan.skipped} unchanged. (dry run — nothing was changed)"
+        )
     return 0
 
 
@@ -85,7 +87,7 @@ def _run_headless_classify(*, dry_run: bool) -> int:
     auto-resolves the confident accepts. Requires ``[classify] enabled = true``.
     """
     from .core.models import ClassifyDecision
-    from .session import build_engine, is_configured
+    from .session import build_engine, directions_for, is_configured
 
     paths = default_paths()
     config = Config.load(paths.config_file)
@@ -114,12 +116,18 @@ def _run_headless_classify(*, dry_run: bool) -> int:
             mark = "? unsure (kept)"
         print(f"  {mark:16} {event.title} — {event.artist}  (conf {v.confidence:.2f})")
 
-    try:
-        engine = build_engine(config, paths)
-        stats = engine.classify_quarantine(on_event, apply=not dry_run)
-    except Exception as exc:  # noqa: BLE001
-        print(f"Failed to classify: {exc}", file=sys.stderr)
-        return 1
+    # Each engine judges only its own source side, so cover every configured
+    # direction — a "both" config has quarantines on both the Spotify and YT sides.
+    stats = {"considered": 0, "accepted": 0, "rejected": 0, "uncertain": 0, "applied": 0}
+    for direction in directions_for(config):
+        try:
+            engine = build_engine(config, paths, direction=direction)
+            part = engine.classify_quarantine(on_event, apply=not dry_run)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Failed to classify: {exc}", file=sys.stderr)
+            return 1
+        for k in stats:
+            stats[k] += part.get(k, 0)
 
     kept = stats["accepted"] - stats["applied"]
     print(
@@ -133,7 +141,9 @@ def _run_headless_classify(*, dry_run: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="s2y", description="Sync Spotify to YouTube Music")
+    parser = argparse.ArgumentParser(
+        prog="s2y", description="Sync a music library between Spotify and YouTube Music"
+    )
     parser.add_argument("--version", action="version", version=f"s2y {__version__}")
     parser.add_argument(
         "--plan",

@@ -128,6 +128,10 @@ class YtMusicConfig:
 
 @dataclass
 class SyncConfig:
+    # Which way to sync: "spotify_to_yt" (the default import), "yt_to_spotify", or
+    # "both" (run forward, then reverse). Picked per-run from the dashboard; this is
+    # the persisted default. Adds-only either way (no deletes).
+    direction: str = "spotify_to_yt"
     conflict_policy: str = "union"  # v1 only supports "union" (adds-only)
     track_sleep: float = 0.1
     circuit_breaker_pct: int = 30
@@ -142,7 +146,10 @@ class CollectionsConfig:
     sync_playlists: bool = True
     sync_liked_songs: bool = True
     sync_liked_albums: bool = True
-    selected_playlists: list[str] = field(default_factory=list)  # [] => all
+    selected_playlists: list[str] = field(default_factory=list)  # [] => all (Spotify ids)
+    # Reverse-sync playlist allow-list (YouTube ids). Kept separate from
+    # selected_playlists because the two services' id-spaces don't overlap.
+    selected_yt_playlists: list[str] = field(default_factory=list)  # [] => all (YT ids)
 
 
 @dataclass
