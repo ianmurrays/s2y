@@ -7,6 +7,8 @@ unlocks once both succeed.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -29,6 +31,9 @@ from ...services.ytmusic import YTMusicClient
 from ..messages import AuthResult, AuthUrl
 from ..threads import run_detached
 
+if TYPE_CHECKING:
+    from ..app import S2YApp
+
 _YT_HELP = (
     "YouTube Music: open music.youtube.com (logged in) → DevTools → Network → "
     "filter '/browse' → click a POST → copy the request headers (Firefox) or "
@@ -44,6 +49,9 @@ _SP_HELP = (
 
 
 class SetupScreen(Screen):
+    if TYPE_CHECKING:
+        app: S2YApp  # type: ignore[assignment]  # narrow Textual's App to ours
+
     def __init__(self) -> None:
         super().__init__()
         self._sp_ok = False
@@ -59,33 +67,54 @@ class SetupScreen(Screen):
             with Vertical(classes="card"):
                 yield Label("[b]1. Spotify[/b]")
                 yield Static(_SP_HELP, classes="help")
-                yield Input(placeholder="Spotify Client ID", id="sp_client",
-                            value=cfg.spotify.client_id)
-                yield Input(placeholder="Redirect URI", id="sp_redirect",
-                            value=cfg.spotify.effective_redirect_uri)
-                yield Input(placeholder="Local callback port (default 8888)", id="sp_port",
-                            value=str(cfg.spotify.redirect_port))
+                yield Input(
+                    placeholder="Spotify Client ID", id="sp_client", value=cfg.spotify.client_id
+                )
+                yield Input(
+                    placeholder="Redirect URI",
+                    id="sp_redirect",
+                    value=cfg.spotify.effective_redirect_uri,
+                )
+                yield Input(
+                    placeholder="Local callback port (default 8888)",
+                    id="sp_port",
+                    value=str(cfg.spotify.redirect_port),
+                )
                 yield Button("Authorize Spotify", id="sp_auth", variant="primary")
                 yield Static("", id="sp_status", classes="status")
                 # The authorization URL lands here as a selectable field (focusing
                 # selects it all) so it can be copied cleanly, without wrap line-breaks.
-                yield Input(placeholder="Authorization URL appears here — select & copy",
-                            id="sp_auth_url")
+                yield Input(
+                    placeholder="Authorization URL appears here — select & copy", id="sp_auth_url"
+                )
                 yield Button("Copy URL", id="sp_copy_url")
 
             with Vertical(classes="card"):
                 yield Label("[b]2. YouTube Music[/b]")
                 yield Static(_YT_HELP, classes="help")
-                mode = cfg.ytmusic.auth_mode if cfg.ytmusic.auth_mode in ("browser", "oauth") else "browser"
+                mode = (
+                    cfg.ytmusic.auth_mode
+                    if cfg.ytmusic.auth_mode in ("browser", "oauth")
+                    else "browser"
+                )
                 yield Select(
                     [("Browser headers (recommended)", "browser"), ("OAuth", "oauth")],
-                    value=mode, id="yt_mode", allow_blank=False,
+                    value=mode,
+                    id="yt_mode",
+                    allow_blank=False,
                 )
                 yield TextArea(id="yt_headers")
-                yield Input(placeholder="OAuth Client ID (oauth mode)", id="yt_cid",
-                            value=cfg.ytmusic.oauth_client_id)
-                yield Input(placeholder="OAuth Client Secret (oauth mode)", id="yt_secret",
-                            password=True, value=cfg.ytmusic.oauth_client_secret)
+                yield Input(
+                    placeholder="OAuth Client ID (oauth mode)",
+                    id="yt_cid",
+                    value=cfg.ytmusic.oauth_client_id,
+                )
+                yield Input(
+                    placeholder="OAuth Client Secret (oauth mode)",
+                    id="yt_secret",
+                    password=True,
+                    value=cfg.ytmusic.oauth_client_secret,
+                )
                 yield Button("Connect YouTube Music", id="yt_auth", variant="primary")
                 yield Static("", id="yt_status", classes="status")
 
@@ -159,7 +188,8 @@ class SetupScreen(Screen):
 
     @work
     async def connect_ytmusic(self) -> None:
-        mode = self.query_one("#yt_mode", Select).value
+        # allow_blank=False on the Select guarantees a real value ("browser"/"oauth").
+        mode = str(self.query_one("#yt_mode", Select).value)
         self.app.config.ytmusic.auth_mode = mode
         try:
             if mode == "browser":
@@ -170,8 +200,12 @@ class SetupScreen(Screen):
                     lambda: ytmusic_auth.setup_browser(self.app.config, self.app.paths, raw)
                 )
             else:
-                self.app.config.ytmusic.oauth_client_id = self.query_one("#yt_cid", Input).value.strip()
-                self.app.config.ytmusic.oauth_client_secret = self.query_one("#yt_secret", Input).value.strip()
+                self.app.config.ytmusic.oauth_client_id = self.query_one(
+                    "#yt_cid", Input
+                ).value.strip()
+                self.app.config.ytmusic.oauth_client_secret = self.query_one(
+                    "#yt_secret", Input
+                ).value.strip()
                 await run_detached(
                     lambda: ytmusic_auth.setup_oauth(self.app.config, self.app.paths)
                 )
@@ -190,13 +224,15 @@ class SetupScreen(Screen):
         if message.service == "spotify":
             self._sp_ok = message.ok
             self.query_one("#sp_status", Static).update(
-                f"[green]Connected as {message.detail}[/]" if message.ok
+                f"[green]Connected as {message.detail}[/]"
+                if message.ok
                 else f"[red]{message.detail}[/]"
             )
         else:
             self._yt_ok = message.ok
             self.query_one("#yt_status", Static).update(
-                f"[green]Connected to {message.detail}[/]" if message.ok
+                f"[green]Connected to {message.detail}[/]"
+                if message.ok
                 else f"[red]{message.detail}[/]"
             )
         self.query_one("#finish", Button).disabled = not (self._sp_ok and self._yt_ok)

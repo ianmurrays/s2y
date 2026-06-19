@@ -33,18 +33,15 @@ class SpotifyClient:
         def _on_retry(exc: Exception, attempt: int, wait: float) -> None:
             log.warning("%s throttled/failed: %s — retry %d in %.0fs", what, exc, attempt, wait)
 
-        return with_retry(
-            fn, sleep=self._sleep, on_retry=_on_retry, retryable=is_transient
-        )
+        return with_retry(fn, sleep=self._sleep, on_retry=_on_retry, retryable=is_transient)
 
     def _paginate(self, first_page: dict, *, what: str = "page") -> Iterator[dict]:
-        page = first_page
+        page: dict | None = first_page
         pages = 0
         while page:
             pages += 1
             log.debug("Spotify %s: page %d", what, pages)
-            for item in page.get("items", []) or []:
-                yield item
+            yield from page.get("items", []) or []
             if page.get("next"):
                 current = page
                 page = self._call(lambda p=current: self._sp.next(p), f"{what} next page")

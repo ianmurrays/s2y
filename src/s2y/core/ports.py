@@ -58,9 +58,7 @@ class YtMusicTarget(Protocol):
     def get_or_create_playlist(self, name: str) -> str:
         """Return the YT playlist id for ``name``, creating it (PRIVATE) if absent."""
 
-    def add_playlist_items(
-        self, playlist_id: str, video_ids: list[str]
-    ) -> dict[str, str | None]:
+    def add_playlist_items(self, playlist_id: str, video_ids: list[str]) -> dict[str, str | None]:
         """Add items (duplicates skipped). Returns ``{video_id: set_video_id|None}``."""
 
     def like_song(self, video_id: str) -> None: ...
@@ -81,6 +79,4 @@ class Classifier(Protocol):
     quarantined.
     """
 
-    def classify_batch(
-        self, items: tuple[ClassifyItem, ...]
-    ) -> tuple[ClassifyVerdict, ...]: ...
+    def classify_batch(self, items: tuple[ClassifyItem, ...]) -> tuple[ClassifyVerdict, ...]: ...

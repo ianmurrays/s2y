@@ -60,7 +60,9 @@ def _run_headless_plan() -> int:
             r = event.result
             mark = {"auto": "✓", "quarantine": "?", "no_match": "✗"}.get(r.outcome.value, "·")
             target = r.best.title if r.best else "—"
-            print(f"  {mark} {r.source.title} — {r.source.artist}  ->  {target} ({r.confidence:.2f})")
+            print(
+                f"  {mark} {r.source.title} — {r.source.artist}  ->  {target} ({r.confidence:.2f})"
+            )
 
     try:
         engine = build_engine(config, paths)
@@ -134,20 +136,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="s2y", description="Sync Spotify to YouTube Music")
     parser.add_argument("--version", action="version", version=f"s2y {__version__}")
     parser.add_argument(
-        "--plan", action="store_true",
+        "--plan",
+        action="store_true",
         help="headless dry-run: print the sync plan and exit (no UI, no changes)",
     )
     parser.add_argument(
-        "--classify", action="store_true",
+        "--classify",
+        action="store_true",
         help="headless: run the Claude LLM judge over quarantined tracks and "
-             "auto-resolve confident matches (requires [classify] enabled)",
+        "auto-resolve confident matches (requires [classify] enabled)",
     )
     parser.add_argument(
-        "--classify-dry-run", action="store_true",
+        "--classify-dry-run",
+        action="store_true",
         help="like --classify but print verdicts only; resolve nothing",
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true",
+        "-v",
+        "--verbose",
+        action="store_true",
         help="verbose (DEBUG) logging to the log file",
     )
     args = parser.parse_args(argv)

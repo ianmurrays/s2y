@@ -11,6 +11,7 @@ TOML-writer dependency for a handful of scalar fields.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tomllib
 from dataclasses import asdict, dataclass, field
@@ -71,10 +72,8 @@ def default_paths() -> Paths:
 
 def _chmod_quiet(path: Path, mode: int) -> None:
     """chmod that no-ops on platforms/filesystems that don't support it."""
-    try:
+    with contextlib.suppress(OSError, NotImplementedError):
         os.chmod(path, mode)
-    except (OSError, NotImplementedError):
-        pass
 
 
 def secure_existing(path: Path) -> None:

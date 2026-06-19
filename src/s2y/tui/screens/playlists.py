@@ -18,6 +18,8 @@ playlists entirely, never reaching the ``[]==all`` branch).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -28,6 +30,9 @@ from textual.widgets.selection_list import Selection
 from ..messages import PlaylistsLoaded, WorkerFailed
 from ..threads import run_detached
 
+if TYPE_CHECKING:
+    from ..app import S2YApp
+
 _HELP = (
     "Checked playlists sync. New Spotify playlists don't sync until you check them. "
     "Uncheck all to stop syncing playlists entirely."
@@ -35,6 +40,9 @@ _HELP = (
 
 
 class PlaylistsScreen(Screen):
+    if TYPE_CHECKING:
+        app: S2YApp  # type: ignore[assignment]  # narrow Textual's App to ours
+
     BINDINGS = [("escape", "back", "Back")]
 
     def __init__(self) -> None:
@@ -99,7 +107,8 @@ class PlaylistsScreen(Screen):
         n = len(message.playlists)
         self.query_one("#playlists_status", Static).update(
             f"{n} playlist{'s' if n != 1 else ''}. Checked ones will sync."
-            if n else "No playlists found on Spotify."
+            if n
+            else "No playlists found on Spotify."
         )
 
     def on_worker_failed(self, message: WorkerFailed) -> None:
@@ -133,7 +142,8 @@ class PlaylistsScreen(Screen):
         n = len(ids)
         self.query_one("#playlists_status", Static).update(
             f"[green]Saved — {n} playlist{'s' if n != 1 else ''} will sync.[/]"
-            if n else "[green]Saved — playlists will not sync.[/]"
+            if n
+            else "[green]Saved — playlists will not sync.[/]"
         )
 
     @on(Button.Pressed, "#pl_back")

@@ -40,8 +40,9 @@ class ClaudeClassifier:
     construct in tests and stays decoupled from config loading.
     """
 
-    def __init__(self, *, claude_path: str = "claude", model: str = "sonnet",
-                 timeout_s: float = 120.0) -> None:
+    def __init__(
+        self, *, claude_path: str = "claude", model: str = "sonnet", timeout_s: float = 120.0
+    ) -> None:
         self._path = claude_path
         self._model = model
         self._timeout = timeout_s
@@ -51,34 +52,46 @@ class ClaudeClassifier:
         # tool-free text completion. `--output-format json` wraps the reply in an
         # envelope whose `result` field holds the model's text.
         return [
-            self._path, "-p", prompt,
-            "--output-format", "json",
-            "--model", self._model,
-            "--tools", "",
+            self._path,
+            "-p",
+            prompt,
+            "--output-format",
+            "json",
+            "--model",
+            self._model,
+            "--tools",
+            "",
         ]
 
     @staticmethod
     def _all_uncertain(items: tuple[ClassifyItem, ...]) -> tuple[ClassifyVerdict, ...]:
         return tuple(_uncertain() for _ in items)
 
-    def classify_batch(
-        self, items: tuple[ClassifyItem, ...]
-    ) -> tuple[ClassifyVerdict, ...]:
+    def classify_batch(self, items: tuple[ClassifyItem, ...]) -> tuple[ClassifyVerdict, ...]:
         if not items:
             return ()
         prompt = build_batch_prompt(items)
         try:
             proc = subprocess.run(
                 self._command(prompt),
-                capture_output=True, text=True, timeout=self._timeout, check=False,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                check=False,
             )
         except FileNotFoundError:
-            log.warning("claude binary not found at %r — leaving %d track(s) quarantined",
-                        self._path, len(items))
+            log.warning(
+                "claude binary not found at %r — leaving %d track(s) quarantined",
+                self._path,
+                len(items),
+            )
             return self._all_uncertain(items)
         except subprocess.TimeoutExpired:
-            log.warning("claude classify timed out after %ss for a %d-track batch",
-                        self._timeout, len(items))
+            log.warning(
+                "claude classify timed out after %ss for a %d-track batch",
+                self._timeout,
+                len(items),
+            )
             return self._all_uncertain(items)
 
         if proc.returncode != 0:

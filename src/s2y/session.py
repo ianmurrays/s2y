@@ -76,6 +76,4 @@ def build_engine(
     spotify = SpotifyClient(spotify_pkce.build_client(config, paths), sleep=sleep)
     ytmusic = YTMusicClient(ytmusic_auth.build_client(config, paths), sleep=sleep)
     repo = Repository(connect(paths.db))
-    return Engine(
-        spotify, ytmusic, repo, config, sleep=sleep, stop=stop, classifier=classifier
-    )
+    return Engine(spotify, ytmusic, repo, config, sleep=sleep, stop=stop, classifier=classifier)

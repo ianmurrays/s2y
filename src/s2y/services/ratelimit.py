@@ -10,9 +10,6 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
-from typing import TypeVar
-
-T = TypeVar("T")
 
 SleepFn = Callable[[float], None]
 RetryHook = Callable[[Exception, int, float], None]
@@ -38,7 +35,7 @@ def retry_after_seconds(exc: Exception) -> float | None:
         return None
 
 
-def with_retry(
+def with_retry[T](
     fn: Callable[[], T],
     *,
     tries: int = 6,
@@ -82,7 +79,11 @@ def interruptible_sleep(stop: threading.Event) -> SleepFn:
     ``stop.set()``, so a long backoff/pacing sleep aborts the moment the UI asks
     the engine to stop (e.g. on quit) instead of sleeping out the full interval.
     """
-    return lambda seconds: stop.wait(seconds)
+
+    def _sleep(seconds: float) -> None:
+        stop.wait(seconds)  # discard the bool return so this matches SleepFn
+
+    return _sleep
 
 
 class Pacer:
@@ -97,7 +98,7 @@ class Pacer:
             self._sleep(self.seconds)
 
 
-def chunked(seq: Sequence[T], size: int) -> Iterator[list[T]]:
+def chunked[T](seq: Sequence[T], size: int) -> Iterator[list[T]]:
     """Yield ``seq`` in lists of at most ``size`` (Spotify caps: 100 / 50)."""
     if size <= 0:
         raise ValueError("chunk size must be positive")

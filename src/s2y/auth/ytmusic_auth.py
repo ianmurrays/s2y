@@ -83,9 +83,7 @@ def build_client(config: Config, paths: Paths) -> YTMusic:
             client_id=config.ytmusic.oauth_client_id,
             client_secret=config.ytmusic.oauth_client_secret,
         )
-        return YTMusic(
-            str(paths.ytmusic_oauth), oauth_credentials=creds, requests_session=session
-        )
+        return YTMusic(str(paths.ytmusic_oauth), oauth_credentials=creds, requests_session=session)
     return YTMusic(str(paths.ytmusic_browser), requests_session=session)
 
 

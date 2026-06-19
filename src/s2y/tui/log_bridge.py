@@ -9,6 +9,7 @@ one set of ``log.*`` calls.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from .messages import LogMessage
@@ -33,10 +34,9 @@ class TextualLogHandler(logging.Handler):
             text = self.format(record)
         except Exception:  # noqa: BLE001 — never let logging crash the run
             return
-        try:
+        # target torn down (app exiting) — just drop the line
+        with contextlib.suppress(Exception):
             self._target.post_message(LogMessage(text, record.levelname.lower()))
-        except Exception:  # noqa: BLE001 — target torn down; just drop the line
-            pass
 
 
 def install(target, *, level: int = logging.INFO) -> TextualLogHandler:

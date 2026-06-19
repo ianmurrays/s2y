@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -17,10 +19,13 @@ from ...core.events import (
     PhaseStarted,
     TrackMatched,
 )
-from ...core.models import CollectionKind, MatchMethod, MatchOutcome, OpKind
+from ...core.models import CollectionKind, MatchMethod, MatchOutcome, OpKind, SyncPlan
 from .. import log_bridge
 from ..messages import ApplyDone, EngineEvent, LogMessage, PlanReady, WorkerFailed
 from ..threads import run_detached
+
+if TYPE_CHECKING:
+    from ..app import S2YApp
 
 # How an AUTO match will be applied, by the collection it came from.
 _ADD_VERB = {
@@ -31,6 +36,9 @@ _ADD_VERB = {
 
 
 class SyncScreen(Screen):
+    if TYPE_CHECKING:
+        app: S2YApp  # type: ignore[assignment]  # narrow Textual's App to ours
+
     BINDINGS = [
         ("a", "apply", "Apply"),
         ("escape", "back", "Back"),
@@ -40,15 +48,15 @@ class SyncScreen(Screen):
     def __init__(self, *, dry_run: bool) -> None:
         super().__init__()
         self.dry_run = dry_run
-        self._plan = None
+        self._plan: SyncPlan | None = None
         self._apply_ready = False  # gates the Apply action (and its footer hint)
         self.apply_stats: dict | None = None  # set when an apply completes
-        self._log_handler = None
+        self._log_handler: log_bridge.TextualLogHandler | None = None
         self._coll_name = ""  # active collection (for the per-track counter + "Where")
         self._coll_kind: CollectionKind | None = None  # active collection kind
-        self._total = 0       # tracks in the active collection
-        self._matched = 0     # tracks resolved so far in it
-        self._cached = 0      # of those, how many came from the cache (resume signal)
+        self._total = 0  # tracks in the active collection
+        self._matched = 0  # tracks resolved so far in it
+        self._cached = 0  # of those, how many came from the cache (resume signal)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -57,7 +65,7 @@ class SyncScreen(Screen):
             yield Static(banner, id="mode")
             yield Static("Building plan…", id="phase")
             yield ProgressBar(total=None, show_eta=False, id="bar")
-            table = DataTable(id="rows")
+            table: DataTable[Any] = DataTable(id="rows")
             table.add_columns("Source", "→ YouTube Music", "Where", "Conf", "Action")
             yield table
             yield Static("", id="summary")
@@ -95,9 +103,7 @@ class SyncScreen(Screen):
             # Resolve (and lazily build) the engine INSIDE the thread — building it
             # opens the DB and the API clients, which would block the UI thread.
             plan = await run_detached(
-                lambda: self.app.engine().build_plan(
-                    self._emit, persist_matches=not self.dry_run
-                )
+                lambda: self.app.engine().build_plan(self._emit, persist_matches=not self.dry_run)
             )
         except Exception as exc:  # noqa: BLE001
             self.post_message(WorkerFailed("plan", str(exc)))
@@ -106,10 +112,11 @@ class SyncScreen(Screen):
 
     @work
     async def run_apply(self) -> None:
+        plan = self._plan
+        if plan is None:  # Apply is gated on a ready plan; guard defensively anyway
+            return
         try:
-            stats = await run_detached(
-                lambda: self.app.engine().apply_plan(self._plan, self._emit)
-            )
+            stats = await run_detached(lambda: self.app.engine().apply_plan(plan, self._emit))
         except Exception as exc:  # noqa: BLE001
             self.post_message(WorkerFailed("apply", str(exc)))
             return
@@ -173,6 +180,8 @@ class SyncScreen(Screen):
             return "review"
         if outcome is MatchOutcome.NO_MATCH:
             return "no match"
+        if self._coll_kind is None:
+            return "add"
         return _ADD_VERB.get(self._coll_kind, "add")  # AUTO
 
     # ----- result messages -------------------------------------------------- #
@@ -196,8 +205,7 @@ class SyncScreen(Screen):
         self.apply_stats = s
         self.query_one("#phase", Static).update("Done")
         self.query_one("#summary", Static).update(
-            f"Applied {s['applied']} · failed {s['failed']} · "
-            f"{s['quarantined']} in review"
+            f"Applied {s['applied']} · failed {s['failed']} · {s['quarantined']} in review"
         )
 
     def on_worker_failed(self, message: WorkerFailed) -> None:

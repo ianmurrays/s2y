@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
+if TYPE_CHECKING:
+    from ..app import S2YApp
+
 
 class DashboardScreen(Screen):
+    if TYPE_CHECKING:
+        app: S2YApp  # type: ignore[assignment]  # narrow Textual's App to ours
+
     BINDINGS = [
         ("d", "dry", "Dry run"),
         ("s", "sync", "Sync now"),

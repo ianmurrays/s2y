@@ -174,9 +174,13 @@ def score_candidate(
     # Album agreement is a weak positive — but only trust it when the artist
     # already matches well, otherwise a shared/compilation album name could
     # rescue a wrong-artist candidate into auto-accept.
-    if source.album and cand.album and artist_sim >= 0.7:
-        if _similarity(normalize_title(source.album), normalize_title(cand.album)) > 0.85:
-            score += 0.04
+    if (
+        source.album
+        and cand.album
+        and artist_sim >= 0.7
+        and _similarity(normalize_title(source.album), normalize_title(cand.album)) > 0.85
+    ):
+        score += 0.04
 
     # A dubious artist must not auto-accept on the strength of the title alone.
     # Genuinely different artists that merely share a word (e.g. "Real Band" vs
@@ -229,7 +233,12 @@ def match(
     """Resolve ``source`` to a YouTube Music candidate via the scored cascade."""
     if not source.title.strip() or not source.artist.strip():
         return MatchResult(
-            source, MatchOutcome.NO_MATCH, None, MatchMethod.META, 0.0, (),
+            source,
+            MatchOutcome.NO_MATCH,
+            None,
+            MatchMethod.META,
+            0.0,
+            (),
             reason="missing title or artist",
         )
 
@@ -260,7 +269,12 @@ def match(
 
     if not scored:
         return MatchResult(
-            source, MatchOutcome.NO_MATCH, None, MatchMethod.META, 0.0, (),
+            source,
+            MatchOutcome.NO_MATCH,
+            None,
+            MatchMethod.META,
+            0.0,
+            (),
             reason="no candidates found",
         )
 
@@ -270,14 +284,29 @@ def match(
 
     if best_score >= auto_accept:
         return MatchResult(
-            source, MatchOutcome.AUTO, best, MatchMethod.META, best_score, top_candidates,
+            source,
+            MatchOutcome.AUTO,
+            best,
+            MatchMethod.META,
+            best_score,
+            top_candidates,
         )
     if best_score >= review_floor:
         return MatchResult(
-            source, MatchOutcome.QUARANTINE, best, MatchMethod.FUZZY, best_score,
-            top_candidates, reason="low_conf",
+            source,
+            MatchOutcome.QUARANTINE,
+            best,
+            MatchMethod.FUZZY,
+            best_score,
+            top_candidates,
+            reason="low_conf",
         )
     return MatchResult(
-        source, MatchOutcome.QUARANTINE, best, MatchMethod.FUZZY, best_score,
-        top_candidates, reason="ambiguous",
+        source,
+        MatchOutcome.QUARANTINE,
+        best,
+        MatchMethod.FUZZY,
+        best_score,
+        top_candidates,
+        reason="ambiguous",
     )

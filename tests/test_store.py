@@ -23,19 +23,26 @@ def test_resolve_quarantine_match_helper(repo: Repository):
     invalidated signatures, all in one transaction (used by the TUI and LLM judge)."""
     from s2y.core.resolve import resolve_quarantine_match
 
-    coll = repo.get_or_create_collection(
-        name="Chill", kind="playlist", spotify_playlist_id="sp1"
-    )
+    coll = repo.get_or_create_collection(name="Chill", kind="playlist", spotify_playlist_id="sp1")
     repo.update_collection(coll.id, spotify_snapshot_id="snap-1")
     qid = repo.add_quarantine(
-        source_side="spotify", source_uri="spotify:track:7", title="Wéird Tïtle",
-        artist="Nobody", album=None, reason="low_conf",
+        source_side="spotify",
+        source_uri="spotify:track:7",
+        title="Wéird Tïtle",
+        artist="Nobody",
+        album=None,
+        reason="low_conf",
         best_candidate={"video_id": "vz"},
     )
 
     track = resolve_quarantine_match(
-        repo, quarantine_id=qid, spotify_uri="spotify:track:7", yt_video_id="vz",
-        title="Wéird Tïtle", artist="Nobody", match_method="claude",
+        repo,
+        quarantine_id=qid,
+        spotify_uri="spotify:track:7",
+        yt_video_id="vz",
+        title="Wéird Tïtle",
+        artist="Nobody",
+        match_method="claude",
         match_confidence=0.9,
     )
 
@@ -75,12 +82,16 @@ def test_upsert_track_insert_and_fetch(repo: Repository):
 
 def test_upsert_track_is_idempotent_on_uri(repo: Repository):
     a = repo.upsert_track(
-        spotify_uri="spotify:track:1", yt_video_id="vid1",
-        canon_title="s", canon_artist="a",
+        spotify_uri="spotify:track:1",
+        yt_video_id="vid1",
+        canon_title="s",
+        canon_artist="a",
     )
     b = repo.upsert_track(
-        spotify_uri="spotify:track:1", yt_video_id="vid2",
-        canon_title="s", canon_artist="a",
+        spotify_uri="spotify:track:1",
+        yt_video_id="vid2",
+        canon_title="s",
+        canon_artist="a",
     )
     assert a.id == b.id  # same row, updated in place
     assert repo.get_track_by_spotify_uri("spotify:track:1").yt_video_id == "vid2"
@@ -88,13 +99,21 @@ def test_upsert_track_is_idempotent_on_uri(repo: Repository):
 
 def test_upsert_does_not_downgrade_verified(repo: Repository):
     repo.upsert_track(
-        spotify_uri="u", yt_video_id="v1", canon_title="s", canon_artist="a",
-        verified=True, match_confidence=1.0,
+        spotify_uri="u",
+        yt_video_id="v1",
+        canon_title="s",
+        canon_artist="a",
+        verified=True,
+        match_confidence=1.0,
     )
     # A later automatic (unverified) match must not clear the human verification.
     repo.upsert_track(
-        spotify_uri="u", yt_video_id="v2", canon_title="s", canon_artist="a",
-        verified=False, match_confidence=0.4,
+        spotify_uri="u",
+        yt_video_id="v2",
+        canon_title="s",
+        canon_artist="a",
+        verified=False,
+        match_confidence=0.4,
     )
     row = repo.get_track_by_spotify_uri("u")
     assert row.verified is True
@@ -102,17 +121,30 @@ def test_upsert_does_not_downgrade_verified(repo: Repository):
 
 
 def test_get_track_by_video_id_prefers_verified(repo: Repository):
-    repo.upsert_track(spotify_uri="u1", yt_video_id="shared", canon_title="s",
-                      canon_artist="a", verified=False, match_confidence=0.5)
-    repo.upsert_track(spotify_uri="u2", yt_video_id="shared", canon_title="s",
-                      canon_artist="a", verified=True, match_confidence=0.9)
+    repo.upsert_track(
+        spotify_uri="u1",
+        yt_video_id="shared",
+        canon_title="s",
+        canon_artist="a",
+        verified=False,
+        match_confidence=0.5,
+    )
+    repo.upsert_track(
+        spotify_uri="u2",
+        yt_video_id="shared",
+        canon_title="s",
+        canon_artist="a",
+        verified=True,
+        match_confidence=0.9,
+    )
     row = repo.get_track_by_video_id("shared")
     assert row.spotify_uri == "u2"
 
 
 def test_set_track_resolution(repo: Repository):
-    t = repo.upsert_track(spotify_uri="u", yt_video_id=None, canon_title="s",
-                          canon_artist="a", match_method="fuzzy")
+    t = repo.upsert_track(
+        spotify_uri="u", yt_video_id=None, canon_title="s", canon_artist="a", match_method="fuzzy"
+    )
     repo.set_track_resolution(t.id, yt_video_id="chosen")
     row = repo.get_track(t.id)
     assert row.yt_video_id == "chosen"
@@ -156,8 +188,9 @@ def test_update_collection_rejects_unknown_field(repo: Repository):
 
 def test_update_collection_snapshot_and_fingerprint(repo: Repository):
     c = repo.get_or_create_collection(name="x", kind="playlist", spotify_playlist_id="sp1")
-    repo.update_collection(c.id, spotify_snapshot_id="snap1", yt_playlist_id="yt1",
-                           yt_content_fingerprint="fp1")
+    repo.update_collection(
+        c.id, spotify_snapshot_id="snap1", yt_playlist_id="yt1", yt_content_fingerprint="fp1"
+    )
     row = repo.get_collection(c.id)
     assert row.spotify_snapshot_id == "snap1"
     assert row.yt_playlist_id == "yt1"
@@ -204,8 +237,13 @@ def test_snapshot_latest_wins(repo: Repository):
 # --------------------------------------------------------------------------- #
 def test_quarantine_add_list_resolve(repo: Repository):
     qid = repo.add_quarantine(
-        source_side="spotify", source_uri="u", title="t", artist="a", album="al",
-        reason="no_match", best_candidate={"video_id": "v"},
+        source_side="spotify",
+        source_uri="u",
+        title="t",
+        artist="a",
+        album="al",
+        reason="no_match",
+        best_candidate={"video_id": "v"},
     )
     assert repo.count_unresolved_quarantine() == 1
     t = repo.upsert_track(spotify_uri="u", yt_video_id="v", canon_title="t", canon_artist="a")
@@ -214,10 +252,12 @@ def test_quarantine_add_list_resolve(repo: Repository):
 
 
 def test_quarantine_conflict_bumps_attempts(repo: Repository):
-    repo.add_quarantine(source_side="spotify", source_uri="u", title="t", artist="a",
-                        album=None, reason="no_match")
-    repo.add_quarantine(source_side="spotify", source_uri="u", title="t", artist="a",
-                        album=None, reason="low_conf")
+    repo.add_quarantine(
+        source_side="spotify", source_uri="u", title="t", artist="a", album=None, reason="no_match"
+    )
+    repo.add_quarantine(
+        source_side="spotify", source_uri="u", title="t", artist="a", album=None, reason="low_conf"
+    )
     row = repo.get_quarantine_by_source("spotify", "u")
     assert row["attempts"] == 2
     assert row["reason"] == "low_conf"
@@ -246,6 +286,7 @@ def test_transaction_rolls_back_on_error(repo: Repository):
 
 def test_foreign_key_enforced(repo: Repository):
     import sqlite3
+
     with pytest.raises(sqlite3.IntegrityError):
         repo.upsert_membership(9999, 8888, present_spotify=True)  # dangling FKs
 

@@ -8,10 +8,10 @@ filesystem, or Textual. The matching/normalization logic lives in
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class CollectionKind(str, Enum):
+class CollectionKind(StrEnum):
     """The logical kind of a thing we sync.
 
     A playlist is a named ordered set of tracks. Liked Songs and Liked Albums are
@@ -24,7 +24,7 @@ class CollectionKind(str, Enum):
     LIKED_ALBUMS = "liked_albums"
 
 
-class MatchMethod(str, Enum):
+class MatchMethod(StrEnum):
     """How a Spotify track was resolved to a YouTube Music ``videoId``."""
 
     CACHED = "cached"  # already in track_map; never re-matched
@@ -34,7 +34,7 @@ class MatchMethod(str, Enum):
     MANUAL = "manual"  # a human resolved it in the review screen
 
 
-class MatchOutcome(str, Enum):
+class MatchOutcome(StrEnum):
     """The disposition of a single match attempt."""
 
     AUTO = "auto"  # confidence cleared the auto-accept threshold
@@ -97,7 +97,7 @@ class MatchResult:
         return self.best.video_id if self.best else None
 
 
-class ClassifyDecision(str, Enum):
+class ClassifyDecision(StrEnum):
     """An LLM judge's verdict on a quarantined track (see :mod:`s2y.core.classify`)."""
 
     ACCEPT = "accept"  # one of the candidates IS this track
@@ -153,7 +153,7 @@ class RemoteAlbum:
     artist: str
 
 
-class OpKind(str, Enum):
+class OpKind(StrEnum):
     """A single idempotent write against the destination service."""
 
     CREATE_PLAYLIST = "create_playlist"

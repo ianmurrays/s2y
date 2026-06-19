@@ -58,8 +58,9 @@ def test_build_batch_prompt_marks_track_with_no_candidates():
 # parse_batch_verdicts — single-element happy paths
 # --------------------------------------------------------------------------- #
 def test_parse_accept():
-    v = _one({"decision": "accept", "video_id": "vA1", "confidence": 0.9,
-              "reasoning": "same recording"})
+    v = _one(
+        {"decision": "accept", "video_id": "vA1", "confidence": 0.9, "reasoning": "same recording"}
+    )
     assert v.decision is ClassifyDecision.ACCEPT
     assert v.video_id == "vA1"
     assert v.confidence == 0.9
@@ -141,10 +142,12 @@ def test_parse_reasoning_is_truncated():
 def test_returns_one_verdict_per_item_routed_by_index():
     items = (ITEM_A, ITEM_B)
     # Out-of-order array; each element validated against ITS OWN item's candidates.
-    text = json.dumps([
-        {"index": 2, "decision": "accept", "video_id": "vB1", "confidence": 0.88},
-        {"index": 1, "decision": "accept", "video_id": "vA1", "confidence": 0.91},
-    ])
+    text = json.dumps(
+        [
+            {"index": 2, "decision": "accept", "video_id": "vB1", "confidence": 0.88},
+            {"index": 1, "decision": "accept", "video_id": "vA1", "confidence": 0.91},
+        ]
+    )
     out = parse_batch_verdicts(text, items)
     assert len(out) == 2
     assert out[0].decision is ClassifyDecision.ACCEPT and out[0].video_id == "vA1"
@@ -160,10 +163,12 @@ def test_cross_item_video_id_is_rejected_per_item():
 
 
 def test_missing_index_is_uncertain_others_unaffected():
-    text = json.dumps([
-        {"index": 1, "decision": "accept", "video_id": "vA1", "confidence": 0.9},
-        # index 2 omitted entirely
-    ])
+    text = json.dumps(
+        [
+            {"index": 1, "decision": "accept", "video_id": "vA1", "confidence": 0.9},
+            # index 2 omitted entirely
+        ]
+    )
     out = parse_batch_verdicts(text, (ITEM_A, ITEM_B))
     assert out[0].decision is ClassifyDecision.ACCEPT
     assert out[1].decision is ClassifyDecision.UNCERTAIN
@@ -171,10 +176,12 @@ def test_missing_index_is_uncertain_others_unaffected():
 
 def test_duplicate_index_is_uncertain():
     # Two elements claim track 1 — ambiguous, so we don't trust either.
-    text = json.dumps([
-        {"index": 1, "decision": "accept", "video_id": "vA1", "confidence": 0.9},
-        {"index": 1, "decision": "reject", "video_id": None, "confidence": 0.4},
-    ])
+    text = json.dumps(
+        [
+            {"index": 1, "decision": "accept", "video_id": "vA1", "confidence": 0.9},
+            {"index": 1, "decision": "reject", "video_id": None, "confidence": 0.4},
+        ]
+    )
     out = parse_batch_verdicts(text, (ITEM_A,))
     assert len(out) == 1 and out[0].decision is ClassifyDecision.UNCERTAIN
 
@@ -182,18 +189,19 @@ def test_duplicate_index_is_uncertain():
 def test_positional_fallback_when_no_indices_present():
     # A well-formed array of the right length with no usable index keys is mapped
     # positionally (per-item video_id validation still guards correctness).
-    text = json.dumps([
-        {"decision": "accept", "video_id": "vA1", "confidence": 0.9},
-        {"decision": "accept", "video_id": "vB1", "confidence": 0.8},
-    ])
+    text = json.dumps(
+        [
+            {"decision": "accept", "video_id": "vA1", "confidence": 0.9},
+            {"decision": "accept", "video_id": "vB1", "confidence": 0.8},
+        ]
+    )
     out = parse_batch_verdicts(text, (ITEM_A, ITEM_B))
     assert out[0].video_id == "vA1" and out[1].video_id == "vB1"
 
 
 def test_length_always_matches_items():
     # More elements than items, and fewer — output length tracks the item count.
-    long = json.dumps([{"index": i, "decision": "reject", "confidence": 0.5}
-                       for i in range(1, 6)])
+    long = json.dumps([{"index": i, "decision": "reject", "confidence": 0.5} for i in range(1, 6)])
     assert len(parse_batch_verdicts(long, (ITEM_A, ITEM_B))) == 2
     short = json.dumps([{"index": 1, "decision": "reject", "confidence": 0.5}])
     assert len(parse_batch_verdicts(short, (ITEM_A, ITEM_B))) == 2
