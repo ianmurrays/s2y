@@ -169,14 +169,36 @@ def test_spotify_liked_songs_and_albums():
 
 
 # ----- Spotify target role (reverse sync) ----- #
-def test_spotify_present_ids():
+def test_spotify_present_candidates():
     c = SpotifyClient(FakeSpotify(), sleep=NO_SLEEP)
-    assert c.present_playlist_ids("p1") == {
-        "spotify:track:a",
-        "spotify:track:b",
-    }  # None + local dropped
-    assert c.present_liked_ids() == {"spotify:track:l"}
+    # Null track + local dropped, and the second page is read.
+    tracks = c.present_playlist_candidates("p1")
+    assert [(t.video_id, t.title, t.artist, t.duration_s) for t in tracks] == [
+        ("spotify:track:a", "Song A", "Artist A", 200),
+        ("spotify:track:b", "Song B", "Artist B", 200),
+    ]
+    liked = c.present_liked_candidates()
+    assert [(t.video_id, t.title, t.artist, t.duration_s) for t in liked] == [
+        ("spotify:track:l", "Liked", "Lk", 200)
+    ]
     assert c.present_album_keys() == {("band", "greatest")}
+
+
+def test_spotify_present_candidates_drops_episodes():
+    fake = FakeSpotify()
+    fake.playlist_items = lambda pid, limit=100, additional_types=("track",): {
+        "items": [_track("Ep", "Host", "spotify:episode:e", ttype="episode")],
+        "next": None,
+    }
+    assert SpotifyClient(fake, sleep=NO_SLEEP).present_playlist_candidates("p1") == []
+
+
+def test_spotify_find_playlist_id_has_no_side_effects():
+    fake = FakeSpotify()
+    c = SpotifyClient(fake, sleep=NO_SLEEP)
+    assert c.find_playlist_id("Two") == "p2"
+    assert c.find_playlist_id("Missing") is None
+    assert fake.created == []
 
 
 def test_spotify_search_candidate_duration_is_seconds():
@@ -327,11 +349,24 @@ def test_yt_list_playlists_filters_liked_music_and_parses_count():
     assert pls[0].count == 1234
 
 
-def test_yt_present_ids():
+def test_yt_present_candidates():
     c = YTMusicClient(FakeYT(), sleep=NO_SLEEP)
-    assert c.present_playlist_ids("yt1") == {"v1", "v2"}
-    assert c.present_liked_ids() == {"lk1", "lk2"}
+    # None videoId dropped; duration_seconds parsed, and None when absent.
+    tracks = c.present_playlist_candidates("yt1")
+    assert [(t.video_id, t.title, t.artist, t.duration_s) for t in tracks] == [
+        ("v1", "Song A", "Artist A", 200),
+        ("v2", "Song B", "Artist B", None),
+    ]
+    assert [t.video_id for t in c.present_liked_candidates()] == ["lk1", "lk2"]
     assert c.present_album_keys() == {("band", "greatest")}
+
+
+def test_yt_find_playlist_id_has_no_side_effects():
+    fake = FakeYT()
+    c = YTMusicClient(fake, sleep=NO_SLEEP)
+    assert c.find_playlist_id("One") == "yt1"
+    assert c.find_playlist_id("Missing") is None
+    assert fake.created == []
 
 
 def test_yt_rich_reads_for_reverse_source():

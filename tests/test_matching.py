@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from s2y.core import matching
 from s2y.core.matching import (
     match,
@@ -38,6 +40,91 @@ def song(vid, title, artist, *, album="", dur=None, is_song=True):
     return YtCandidate(
         video_id=vid, title=title, artist=artist, album=album, duration_s=dur, is_song=is_song
     )
+
+
+# --------------------------------------------------------------------------- #
+# Content dedup: PresentIndex
+# --------------------------------------------------------------------------- #
+def _src(title, artist, dur):
+    return SongInfo(title, artist, duration_ms=None if dur is None else dur * 1000)
+
+
+def _present(source, cands):
+    hit = matching.PresentIndex(cands).find(source)
+    return None if hit is None else hit[0].video_id
+
+
+def test_present_matches_exact_same_song():
+    cands = [song("uri:A", "Blinding Lights", "The Weeknd", dur=200)]
+    assert _present(_src("Blinding Lights", "The Weeknd", 200), cands) == "uri:A"
+
+
+def test_present_tolerates_artist_credit_and_edition_variance():
+    # The exact-id dedup misses these; content match must catch them. (Real cases:
+    # "The Goo Goo Dolls" vs "Goo Goo Dolls", a remaster suffix on the title.)
+    cands = [song("uri:A", "Iris", "The Goo Goo Dolls", dur=290)]
+    assert _present(_src("Iris", "Goo Goo Dolls", 290), cands) == "uri:A"
+
+    cands = [song("uri:B", "Father and Son", "Yusuf / Cat Stevens", dur=220)]
+    assert _present(_src("Father and Son", "Cat Stevens", 220), cands) == "uri:B"
+
+    cands = [song("uri:C", "A Little Respect - 2009 Remaster", "Erasure", dur=214)]
+    assert _present(_src("A Little Respect", "Erasure", 214), cands) == "uri:C"
+
+
+def test_present_rejects_duration_mismatch():
+    # Same title/artist but a very different length (e.g. a live cut) is NOT the same
+    # recording — it must still be proposed as an add, never silently deduped.
+    cands = [song("uri:A", "Blinding Lights", "The Weeknd", dur=320)]
+    assert _present(_src("Blinding Lights", "The Weeknd", 200), cands) is None
+
+
+@pytest.mark.parametrize(
+    ("source", "present", "dur"),
+    [
+        ("Hallelujah (Live)", "Hallelujah", 413),
+        ("Dancing in the Dark (Remix)", "Dancing in the Dark", 245),
+        ("Interlude Pt. 1", "Interlude Pt. 2", 120),
+        ("Symphony No. 5", "Symphony No. 6", 300),
+        ("Blinding Lights", "Blinding Lights Reprise", 200),
+    ],
+)
+def test_present_rejects_other_versions_and_siblings(source, present, dur):
+    # score_candidate gives all of these >= AUTO_ACCEPT; a false hit silently loses a track.
+    cands = [song("uri:A", present, "Artist", dur=dur)]
+    assert _present(_src(source, "Artist", dur), cands) is None
+
+
+@pytest.mark.parametrize(("src_dur", "cand_dur"), [(None, 200), (200, None), (None, None)])
+def test_present_fails_closed_on_missing_duration(src_dur, cand_dur):
+    cands = [song("uri:A", "Blinding Lights", "The Weeknd", dur=cand_dur)]
+    assert _present(_src("Blinding Lights", "The Weeknd", src_dur), cands) is None
+
+
+def test_present_does_not_conflate_non_latin_titles():
+    # normalize_title drops non-Latin letters: these reduce to "2" and "" respectively.
+    cands = [song("uri:A", "恋 2", "アーティスト", dur=200)]
+    assert _present(_src("愛 2", "アーティスト", 200), cands) is None
+    assert _present(_src("恋 2", "アーティスト", 200), cands) == "uri:A"
+    cands = [song("uri:B", "!!!", "Artist", dur=200)]
+    assert _present(_src("???", "Artist", 200), cands) is None
+
+
+def test_present_rejects_unrelated_song():
+    cands = [song("uri:A", "Levitating", "Dua Lipa", dur=203)]
+    assert _present(_src("Blinding Lights", "The Weeknd", 200), cands) is None
+
+
+def test_present_picks_best_candidate():
+    cands = [
+        song("uri:wrong", "Blinding Lights", "Someone Else", dur=200),
+        song("uri:right", "Blinding Lights", "The Weeknd", dur=200),
+    ]
+    assert _present(_src("Blinding Lights", "The Weeknd", 200), cands) == "uri:right"
+
+
+def test_present_empty_index_returns_none():
+    assert _present(_src("Blinding Lights", "The Weeknd", 200), []) is None
 
 
 # --------------------------------------------------------------------------- #

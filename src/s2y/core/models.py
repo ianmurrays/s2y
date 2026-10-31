@@ -59,6 +59,7 @@ class MatchMethod(StrEnum):
     META = "meta"  # normalized title+artist, duration-gated
     FUZZY = "fuzzy"
     MANUAL = "manual"  # a human resolved it in the review screen
+    PRESENT = "present"  # already in the target collection by content; never cached
 
 
 class MatchOutcome(StrEnum):
@@ -256,6 +257,8 @@ class SyncPlan:
     ops: list[SyncOp] = field(default_factory=list)
     quarantine: list[MatchResult] = field(default_factory=list)
     matches: list[MatchResult] = field(default_factory=list)  # AUTO/CACHED, to cache
+    present: int = 0  # tracks already on the target (exact id or same recording): no op
+    degraded: list[str] = field(default_factory=list)  # skipped: target could not be read
     collections: list[CollectionSig] = field(default_factory=list)
     skipped: int = 0  # already-synced items that produced no op
     stats: dict = field(default_factory=dict)

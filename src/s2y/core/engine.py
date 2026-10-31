@@ -139,7 +139,7 @@ class Engine:
                 if (
                     r.outcome is MatchOutcome.AUTO
                     and r.video_id
-                    and r.method is not MatchMethod.CACHED
+                    and r.method not in (MatchMethod.CACHED, MatchMethod.PRESENT)
                 ):
                     buffer.append(r)
                     if len(buffer) >= 25:
@@ -379,6 +379,12 @@ class Engine:
         try:
             track = self.repo.get_track_by_spotify_uri(spotify_uri)
             if track is None:
+                log.debug(
+                    "membership: no track_map row for %s — not recording %s; it will be "
+                    "re-proposed next run unless a live read covers it",
+                    spotify_uri,
+                    op.describe(),
+                )
                 return
             coll_id = self._collection_id(op)
             with self.repo.transaction():
@@ -520,7 +526,23 @@ class Engine:
                         owner = self.repo.get_collection_by_spotify_id(target_pl_id)
                         if owner is None or owner.id == coll.id:
                             updates["spotify_playlist_id"] = target_pl_id
+                        else:
+                            log.debug(
+                                "reverse: not claiming spotify_playlist_id %s for %r — owned "
+                                "by collection %d; stays unmapped, dedup falls back to "
+                                "membership + a live read by name",
+                                target_pl_id,
+                                cs.name,
+                                owner.id,
+                            )
                 clean = not failures.get(cs.key)
+                if not clean:
+                    log.info(
+                        "%r: withholding change signature — %d op(s) failed; the collection "
+                        "will be reprocessed next run to retry them",
+                        cs.name,
+                        failures.get(cs.key, 0),
+                    )
                 if clean:
                     updates[self.direction.source_sig_col] = cs.signature
                 if updates:

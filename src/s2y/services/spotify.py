@@ -121,33 +121,6 @@ class SpotifyClient:
         return out
 
     # ----- target role: current-state reads (reverse-sync dedup) ----------- #
-    def present_playlist_ids(self, playlist_id: str) -> set[str]:
-        first = self._call(
-            lambda: self._sp.playlist_items(
-                playlist_id, limit=_ITEMS_PAGE, additional_types=("track",)
-            ),
-            "playlist items",
-        )
-        uris: set[str] = set()
-        for item in self._paginate(first, what="playlist items"):
-            track = (item or {}).get("track") or {}
-            uri = track.get("uri")
-            if uri and not track.get("is_local") and track.get("type") in (None, "track"):
-                uris.add(uri)
-        return uris
-
-    def present_liked_ids(self) -> set[str]:
-        log.info("Spotify: reading your existing Liked Songs…")
-        first = self._call(
-            lambda: self._sp.current_user_saved_tracks(limit=_SAVED_PAGE), "liked songs"
-        )
-        uris: set[str] = set()
-        for item in self._paginate(first, what="liked songs"):
-            uri = ((item or {}).get("track") or {}).get("uri")
-            if uri:
-                uris.add(uri)
-        return uris
-
     def present_album_keys(self) -> set[tuple[str, str]]:
         log.info("Spotify: reading your saved albums…")
         first = self._call(
@@ -163,6 +136,37 @@ class SpotifyClient:
                 )
             )
         return keys
+
+    def present_playlist_candidates(self, playlist_id: str) -> list[YtCandidate]:
+        """Present playlist tracks with metadata (for content-based dedup)."""
+        first = self._call(
+            lambda: self._sp.playlist_items(
+                playlist_id, limit=_ITEMS_PAGE, additional_types=("track",)
+            ),
+            "playlist items",
+        )
+        out: list[YtCandidate] = []
+        for item in self._paginate(first, what="playlist items"):
+            track = (item or {}).get("track") or {}
+            if track.get("is_local") or track.get("type") not in (None, "track"):
+                continue
+            c = self._candidate(track)
+            if c:
+                out.append(c)
+        return out
+
+    def present_liked_candidates(self) -> list[YtCandidate]:
+        """Present Liked Songs with metadata (for content-based dedup)."""
+        log.info("Spotify: reading your existing Liked Songs…")
+        first = self._call(
+            lambda: self._sp.current_user_saved_tracks(limit=_SAVED_PAGE), "liked songs"
+        )
+        out: list[YtCandidate] = []
+        for item in self._paginate(first, what="liked songs"):
+            c = self._candidate((item or {}).get("track"))
+            if c:
+                out.append(c)
+        return out
 
     # ----- target role: catalogue search (consumed by the matcher) --------- #
     def search_songs(self, query: str, *, limit: int = 6) -> list[YtCandidate]:
@@ -233,10 +237,22 @@ class SpotifyClient:
             self._name_to_id = {pl.name: pl.id for pl in self.list_playlists()}
         return self._name_to_id
 
+    def find_playlist_id(self, name: str) -> str | None:
+        return self._names().get(name)
+
     def get_or_create_playlist(self, name: str) -> str:
         cache = self._names()
         if name in cache:
+            log.debug("Spotify: playlist %r matched existing id %s", name, cache[name])
             return cache[name]
+        # No exact-name match — we are about to create a *new* playlist. If the user
+        # already has one that looks the same (e.g. an emoji/whitespace/Unicode variant),
+        # this is where a reverse sync silently orphans it. repr() exposes the difference.
+        log.debug(
+            "Spotify: playlist %r has no exact-name match — creating new (existing: %r)",
+            name,
+            sorted(cache),
+        )
         created = self._call(
             lambda: self._sp.user_playlist_create(
                 self._me(), name, public=False, description="Synced by s2y"
@@ -260,7 +276,7 @@ class SpotifyClient:
             return {}
         present = self._present.get(playlist_id)
         if present is None:
-            present = self.present_playlist_ids(playlist_id)
+            present = {c.video_id for c in self.present_playlist_candidates(playlist_id)}
             self._present[playlist_id] = present
         new = [u for u in video_ids if u not in present]
         for batch in chunked(new, _ADD_CHUNK):

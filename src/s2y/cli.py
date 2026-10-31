@@ -42,7 +42,9 @@ def _configure_logging(paths, *, verbose: bool = False) -> None:
 
 def _run_headless_plan() -> int:
     """Build and print a plan without applying (no TUI). Returns an exit code."""
-    from .core.events import CollectionSkipped, CollectionStarted, TrackMatched
+    from collections import Counter
+
+    from .core.events import CollectionSkipped, CollectionStarted, DedupDegraded, TrackMatched
     from .session import build_engine, directions_for, is_configured
 
     paths = default_paths()
@@ -56,9 +58,13 @@ def _run_headless_plan() -> int:
             print(f"\n# {event.name} ({event.source_count} tracks)")
         elif isinstance(event, CollectionSkipped):
             print(f"\n# {event.name}: unchanged")
+        elif isinstance(event, DedupDegraded):
+            print(f"  ! {event.name}: could not read the target, skipped ({event.detail})")
         elif isinstance(event, TrackMatched):
             r = event.result
             mark = {"auto": "✓", "quarantine": "?", "no_match": "✗"}.get(r.outcome.value, "·")
+            if event.present:
+                mark = "="
             target = r.best.title if r.best else "—"
             print(
                 f"  {mark} {r.source.title} — {r.source.artist}  ->  {target} ({r.confidence:.2f})"
@@ -73,9 +79,15 @@ def _run_headless_plan() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"Failed to build plan: {exc}", file=sys.stderr)
             return 1
+        per_coll = Counter(op.collection for op in plan.ops)
+        if per_coll:
+            print("\nActions by collection:")
+            for coll, n in sorted(per_coll.items()):
+                print(f"  {coll!r}: {n}")
         print(
             f"\nPlan: {len(plan.ops)} actions, {len(plan.quarantine)} need review, "
-            f"{plan.skipped} unchanged. (dry run — nothing was changed)"
+            f"{plan.present} already there, {plan.skipped} unchanged, "
+            f"{len(plan.degraded)} skipped. (dry run — nothing was changed)"
         )
     return 0
 

@@ -91,6 +91,13 @@ src/s2y/
   filters internally (Spotify's add isn't natively idempotent). On partial failure we still
   persist the target playlist-id mapping but **withhold the signature** so the collection is
   reprocessed and failed adds retry. `invalidate_signatures()` clears both columns.
+- **Content dedup:** before searching, the planner asks `matching.PresentIndex` whether the
+  target collection already holds the same recording under another id (equal title after
+  edition tags, both durations known and within tolerance, artist gate). A hit emits no op
+  and is deliberately **not persisted**: the identity cache is global but this fact is per
+  collection, so it is re-probed from the live read. An unmapped collection finds its target
+  playlist by name first (apply would add into that playlist). If the live read fails, the
+  collection is skipped for the run with its signature withheld, never planned blind.
 - **Matching:** auto-accept only ≥ `AUTO_ACCEPT` (0.82); everything else →
   **quarantine** (never guess). Duration-gated; normalization keeps meaningful
   qualifiers (Live/Remix) but strips edition tags (Remastered/feat./accents).

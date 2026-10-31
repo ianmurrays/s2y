@@ -8,12 +8,15 @@ proves no echo / duplicate adds.
 
 from __future__ import annotations
 
+import logging
+import threading
 from dataclasses import dataclass
 
 import pytest
 
 from s2y.config import Config
 from s2y.core.engine import Engine
+from s2y.core.events import DedupDegraded, TrackMatched
 from s2y.core.models import FORWARD, REVERSE, OpKind, RemotePlaylist, SongInfo, YtCandidate
 from s2y.core.planner import signature
 from s2y.store import connect
@@ -111,12 +114,26 @@ class FakeService:
         return []
 
     # ---- target role ----
-    def present_playlist_ids(self, pid):
-        pl = self._playlist_by_id(pid)
-        return set(pl["uris"]) if pl else set()
+    def find_playlist_id(self, name):
+        pl = self._playlists.get(name)
+        return pl["id"] if pl else None
 
-    def present_liked_ids(self):
-        return set(self._liked)
+    def _candidates_for(self, ids):
+        out = []
+        for i in sorted(ids):
+            u = self._by_id(i)
+            if u:
+                out.append(
+                    YtCandidate(video_id=i, title=u.title, artist=u.artist, duration_s=u.duration_s)
+                )
+        return out
+
+    def present_playlist_candidates(self, pid):
+        pl = self._playlist_by_id(pid)
+        return self._candidates_for(pl["uris"]) if pl else []
+
+    def present_liked_candidates(self):
+        return self._candidates_for(self._liked)
 
     def present_album_keys(self):
         return set()
@@ -292,7 +309,7 @@ def test_reverse_resume_dedups_via_membership_when_live_read_empty(repo, config)
     yt, sp = reverse_world(fail={"spotify:track:2"})
     rev_engine(sp, yt, repo, config).apply_plan(rev_engine(sp, yt, repo, config).build_plan())
     # A live Spotify read that knows nothing (signed back in, cache cold).
-    sp.present_playlist_ids = lambda pid: set()
+    sp.present_playlist_candidates = lambda pid: []
     plan2 = rev_engine(sp, yt, repo, config).build_plan()
     add_ids = [op.video_id for op in plan2.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
     assert "spotify:track:1" not in add_ids  # known-landed via membership
@@ -344,6 +361,39 @@ def test_reverse_playlist_name_collision_does_not_crash(repo, config):
     assert repo.get_collection(fwd.id).spotify_playlist_id == sp_chill_id
 
 
+# --------------------------------------------------------------------------- #
+# Diagnostics: the logging that explains "why is it re-proposing everything"
+# --------------------------------------------------------------------------- #
+def test_reverse_dedup_summary_logged_when_unmapped(repo, config, caplog):
+    # A fresh reverse plan of an unmapped YT playlist: present is empty, so every track
+    # looks new. The INFO diagnostics must say so plainly (this is the line that turns
+    # "it re-adds everything" into a diagnosis).
+    yt, sp = reverse_world()
+    with caplog.at_level(logging.INFO, logger="s2y.core.planner"):
+        rev_engine(sp, yt, repo, config).build_plan()
+    text = caplog.text
+    # Source playlist name is logged verbatim (repr) so an emoji/whitespace variant shows.
+    assert "Source playlist name='Chill'" in text
+    # The dedup-base summary fires and shows an empty present set / unmapped collection.
+    assert "dedup base" in text
+    assert "collection_row=none" in text
+    assert "target_pl_id=NULL" in text
+    assert "present=0" in text
+
+
+def test_reverse_per_track_verdict_debug(repo, config, caplog):
+    # After a partial apply (track:2 failed), a re-run must show the per-track verdicts:
+    # track:1 is [present] (known-landed via membership), track:2 is [ADD] (still missing).
+    yt, sp = reverse_world(fail={"spotify:track:2"})
+    rev_engine(sp, yt, repo, config).apply_plan(rev_engine(sp, yt, repo, config).build_plan())
+    sp.present_playlist_candidates = lambda pid: []  # live read cold; membership covers track:1
+    with caplog.at_level(logging.DEBUG, logger="s2y.core.planner"):
+        rev_engine(sp, yt, repo, config).build_plan()
+    text = caplog.text
+    assert "-> spotify:track:1 [present]" in text
+    assert "-> spotify:track:2 [ADD]" in text
+
+
 def test_reverse_quarantine_side_isolated(repo):
     # The same source_uri can be quarantined on each side independently.
     repo.add_quarantine(
@@ -388,9 +438,317 @@ def test_forward_then_reverse_then_forward_no_duplicates(repo, config):
     Engine(sp, yt, repo, config, direction=REVERSE, sleep=NO_SLEEP).apply_plan(rev_plan)
     assert sp._liked == {"spotify:track:1"}  # no growth
     assert sp._playlists["Mix"]["uris"] == {"spotify:track:2"}  # no growth
-    # reverse_map is now warm for the next reverse run.
-    assert repo.get_reverse_by_video_id("yv1").spotify_uri == "spotify:track:1"
+    # Recognized from the live read, so it took no search and wrote no reverse mapping.
+    assert sp.search_calls == 0
+    assert repo.get_reverse_by_video_id("yv1") is None
 
     # 3) Forward again: nothing new to do (no ping-pong back to YouTube).
     plan3 = Engine(sp, yt, repo, config, direction=FORWARD, sleep=NO_SLEEP).build_plan()
     assert plan3.ops == []
+
+
+# --------------------------------------------------------------------------- #
+# Content-based dedup: a song already present under a DIFFERENT release id
+# --------------------------------------------------------------------------- #
+class ReleaseFake:
+    """A fake (both roles, one object) that controls search results and present tracks
+    SEPARATELY — so the same song can sit in the target under a different id than search
+    resolves to (the real reverse-sync duplicate trap). Used for both directions: the
+    engine routes ids by :class:`Direction`, the fake just returns SongInfo/YtCandidate.
+    """
+
+    def __init__(self, *, pl_id, target_pl_id, sources, present, search, snapshot=None):
+        self._pl_id = pl_id
+        self._target_pl_id = target_pl_id
+        self._sources = sources  # [SongInfo, ...] in the source "Auto" playlist
+        self._present = list(present)  # [YtCandidate, ...] already in the target playlist
+        self._search = search  # title-substring -> YtCandidate (the matcher's pick)
+        self._snapshot = snapshot
+        self.search_calls = 0
+        self.added: list[tuple[str, list[str]]] = []
+        self.likes: list[str] = []
+
+    # ---- source role ----
+    def verify(self):
+        return "x"
+
+    def list_playlists(self):
+        return [
+            RemotePlaylist(
+                id=self._pl_id, name="Auto", count=len(self._sources), snapshot_id=self._snapshot
+            )
+        ]
+
+    def playlist_tracks(self, pid):
+        return list(self._sources)
+
+    def liked_songs(self):
+        return []
+
+    def liked_albums(self):
+        return []
+
+    # ---- target role ----
+    def find_playlist_id(self, name):
+        return self._target_pl_id
+
+    def present_playlist_candidates(self, pid):
+        return list(self._present)
+
+    def present_liked_candidates(self):
+        return []
+
+    def present_album_keys(self):
+        return set()
+
+    def search_songs(self, query, *, limit=6):
+        self.search_calls += 1
+        return [c for key, c in self._search.items() if key.lower() in query.lower()]
+
+    def search_videos(self, query, *, limit=4):
+        return []
+
+    def album_candidates(self, artist, album, *, limit_albums=3):
+        return []
+
+    def get_or_create_playlist(self, name):
+        return self._target_pl_id
+
+    def add_playlist_items(self, pid, ids):
+        self.added.append((pid, list(ids)))
+        return {i: None for i in ids}
+
+    def like_song(self, vid):
+        self.likes.append(vid)
+
+    def like_album(self, artist, album):
+        return None
+
+
+def test_reverse_dedups_song_present_under_different_uri(repo, config):
+    # YT 'Auto' has "Blinding Lights"; the Spotify 'Auto' already holds it under a
+    # DIFFERENT uri (and a looser artist credit). Search would resolve it to yet another
+    # uri. The planner must recognize it as present and propose NO add.
+    fake = ReleaseFake(
+        pl_id="yt-auto",
+        target_pl_id="sp-auto",
+        sources=[SongInfo("Blinding Lights", "The Weeknd", duration_ms=200000, yt_video_id="yv1")],
+        present=[YtCandidate("spotify:track:ALT", "Blinding Lights", "Weeknd", duration_s=200)],
+        search={
+            "Blinding Lights": YtCandidate(
+                "spotify:track:NEW", "Blinding Lights", "The Weeknd", duration_s=200
+            )
+        },
+    )
+    coll = repo.get_or_create_collection(name="Auto", kind="playlist", yt_playlist_id="yt-auto")
+    repo.update_collection(coll.id, spotify_playlist_id="sp-auto")
+
+    eng = Engine(fake, fake, repo, config, direction=REVERSE, sleep=NO_SLEEP)
+    events: list = []
+    plan = eng.build_plan(events.append, persist_matches=True)
+    assert plan.ops == []
+    assert plan.present == 1
+    assert fake.search_calls == 0  # recognized before any search
+    shown = [e for e in events if isinstance(e, TrackMatched)]
+    assert [e.present for e in shown] == [True]  # the UI labels it, not as an add
+
+    eng.apply_plan(plan)
+    assert fake.added == []  # nothing was added to Spotify
+    # Per-collection fact: the global identity cache and the ledger stay untouched.
+    assert repo.get_reverse_by_video_id("yv1") is None
+    assert repo.get_track_by_spotify_uri("spotify:track:ALT") is None
+
+    # Re-run after the source changed: recognized again, still no search and no ops.
+    fake._snapshot = None
+    plan2 = Engine(fake, fake, repo, config, direction=REVERSE, sleep=NO_SLEEP).build_plan()
+    assert plan2.ops == []
+    assert fake.search_calls == 0
+
+
+def test_reverse_still_adds_when_only_a_different_recording_is_present(repo, config):
+    # Same title/artist present but a very different duration (a live cut) — NOT the same
+    # recording, so the studio version must still be proposed as an add.
+    fake = ReleaseFake(
+        pl_id="yt-auto",
+        target_pl_id="sp-auto",
+        sources=[SongInfo("Blinding Lights", "The Weeknd", duration_ms=200000, yt_video_id="yv1")],
+        present=[
+            YtCandidate("spotify:track:LIVE", "Blinding Lights", "The Weeknd", duration_s=320)
+        ],
+        search={
+            "Blinding Lights": YtCandidate(
+                "spotify:track:NEW", "Blinding Lights", "The Weeknd", duration_s=200
+            )
+        },
+    )
+    coll = repo.get_or_create_collection(name="Auto", kind="playlist", yt_playlist_id="yt-auto")
+    repo.update_collection(coll.id, spotify_playlist_id="sp-auto")
+
+    plan = Engine(fake, fake, repo, config, direction=REVERSE, sleep=NO_SLEEP).build_plan()
+    add_ids = [op.video_id for op in plan.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
+    assert add_ids == ["spotify:track:NEW"]
+    assert plan.present == 0
+
+
+def test_forward_dedups_song_present_under_different_video_id(repo, config):
+    # The same fix applies forward (Spotify -> YouTube): a song already on YouTube under
+    # a different videoId than search returns must not be re-proposed.
+    fake = ReleaseFake(
+        pl_id="sp-auto",
+        target_pl_id="yt-auto",
+        sources=[SongInfo("Blinding Lights", "The Weeknd", duration_ms=200000, spotify_uri="su1")],
+        present=[YtCandidate("ytALT", "Blinding Lights", "The Weeknd", duration_s=200)],
+        search={
+            "Blinding Lights": YtCandidate("ytNEW", "Blinding Lights", "The Weeknd", duration_s=200)
+        },
+    )
+    coll = repo.get_or_create_collection(
+        name="Auto", kind="playlist", spotify_playlist_id="sp-auto"
+    )
+    repo.update_collection(coll.id, yt_playlist_id="yt-auto")
+
+    eng = Engine(fake, fake, repo, config, direction=FORWARD, sleep=NO_SLEEP)
+    plan = eng.build_plan(persist_matches=True)
+    assert plan.ops == []
+    assert plan.present == 1
+    eng.apply_plan(plan)
+    assert fake.added == []
+    assert repo.get_track_by_spotify_uri("su1") is None  # nothing cached at either id
+
+
+def _song_release_fake(*, present, **kw):
+    return ReleaseFake(
+        pl_id="yt-auto",
+        target_pl_id="sp-auto",
+        sources=[SongInfo("Blinding Lights", "The Weeknd", duration_ms=200000, yt_video_id="yv1")],
+        present=present,
+        search={
+            "Blinding Lights": YtCandidate(
+                "spotify:track:NEW", "Blinding Lights", "The Weeknd", duration_s=200
+            )
+        },
+        **kw,
+    )
+
+
+_ALT = YtCandidate("spotify:track:ALT", "Blinding Lights", "The Weeknd", duration_s=200)
+
+
+def test_first_sync_dedups_against_same_named_target_playlist(repo, config):
+    # No collection row and no stored target id: apply would resolve the playlist by
+    # name and add into it, so the plan has to read that same playlist.
+    fake = _song_release_fake(present=[_ALT])
+    eng = Engine(fake, fake, repo, config, direction=REVERSE, sleep=NO_SLEEP)
+    plan = eng.build_plan()
+    assert plan.ops == []  # no add, and no CREATE for a playlist that exists
+    eng.apply_plan(plan)
+    assert fake.added == []
+
+
+def test_first_sync_with_same_named_playlist_adds_without_create(repo, config):
+    fake = _song_release_fake(present=[])
+    plan = Engine(fake, fake, repo, config, direction=REVERSE, sleep=NO_SLEEP).build_plan()
+    assert [op.kind for op in plan.ops] == [OpKind.ADD_PLAYLIST_ITEM]
+
+
+def test_present_link_leaves_verified_mapping_untouched(repo, config):
+    fake = ReleaseFake(
+        pl_id="sp-auto",
+        target_pl_id="yt-auto",
+        sources=[SongInfo("Blinding Lights", "The Weeknd", duration_ms=200000, spotify_uri="su1")],
+        present=[
+            YtCandidate("ytOTHER", "Blinding Lights (Radio Edit)", "The Weeknd", duration_s=200)
+        ],
+        search={},
+    )
+    repo.upsert_track(
+        spotify_uri="su1",
+        yt_video_id="ytHUMAN",
+        canon_title="blinding lights",
+        canon_artist="the weeknd",
+        match_method="manual",
+        match_confidence=1.0,
+        verified=True,
+    )
+    eng = Engine(fake, fake, repo, config, direction=FORWARD, sleep=NO_SLEEP)
+    eng.apply_plan(eng.build_plan(persist_matches=True))
+    assert fake.added == []
+    row = repo.get_track_by_spotify_uri("su1")
+    assert (row.yt_video_id, row.match_method, row.verified) == ("ytHUMAN", "manual", True)
+
+
+def test_present_tracks_keep_each_playlists_ledger_separate(repo, config):
+    # One Spotify track, present as ALT1 in P1 and ALT2 in P2: neither playlist's ledger
+    # may claim an id it doesn't hold, and the identity row stays unwritten.
+    src = SongInfo("Blinding Lights", "The Weeknd", duration_ms=200000, spotify_uri="su1")
+
+    class TwoPlaylists(ReleaseFake):
+        def list_playlists(self):
+            return [RemotePlaylist(id="sp-p1", name="P1"), RemotePlaylist(id="sp-p2", name="P2")]
+
+        def find_playlist_id(self, name):
+            return {"P1": "yt-p1", "P2": "yt-p2"}[name]
+
+        def present_playlist_candidates(self, pid):
+            vid = {"yt-p1": "ALT1", "yt-p2": "ALT2"}[pid]
+            return [YtCandidate(vid, "Blinding Lights", "The Weeknd", duration_s=200)]
+
+    fake = TwoPlaylists(pl_id="", target_pl_id="", sources=[src], present=[], search={})
+    eng = Engine(fake, fake, repo, config, direction=FORWARD, sleep=NO_SLEEP)
+    plan = eng.build_plan(persist_matches=True)
+    eng.apply_plan(plan)
+
+    assert plan.ops == []
+    assert plan.present == 2
+    assert repo.get_track_by_spotify_uri("su1") is None
+    for sp_id in ("sp-p1", "sp-p2"):
+        assert repo.present_target_ids("yt", repo.get_collection_by_spotify_id(sp_id).id) == set()
+
+
+def test_failed_live_read_proposes_no_blind_add(repo, config):
+    # The song sits in the target under ALT with no ledger row; a failed read can't see
+    # that, so adding the search pick would create a real duplicate.
+    fake = _song_release_fake(present=[_ALT])
+    coll = repo.get_or_create_collection(name="Auto", kind="playlist", yt_playlist_id="yt-auto")
+    repo.update_collection(coll.id, spotify_playlist_id="sp-auto")
+
+    def boom(pid):
+        raise RuntimeError("503")
+
+    fake.present_playlist_candidates = boom
+    events: list = []
+    plan = Engine(fake, fake, repo, config, direction=REVERSE, sleep=NO_SLEEP).build_plan(
+        events.append
+    )
+    assert plan.ops == []
+    assert plan.degraded == ["Auto"]
+    assert "Auto" not in [c.name for c in plan.collections]  # signature stays withheld
+    assert fake.search_calls == 0
+    assert any(isinstance(e, DedupDegraded) for e in events)
+
+
+def test_failed_name_lookup_proposes_no_blind_add(repo, config):
+    fake = _song_release_fake(present=[_ALT])
+
+    def boom(name):
+        raise RuntimeError("503")
+
+    fake.find_playlist_id = boom
+    plan = Engine(fake, fake, repo, config, direction=REVERSE, sleep=NO_SLEEP).build_plan()
+    assert plan.ops == []
+    assert plan.degraded == ["Auto"]
+
+
+def test_stop_interrupts_the_track_loop(repo, config):
+    fake = _song_release_fake(present=[_ALT])
+    stop = threading.Event()
+
+    def on_event(event):
+        if isinstance(event, TrackMatched):
+            stop.set()
+
+    fake._sources = fake._sources * 3
+    plan = Engine(
+        fake, fake, repo, config, direction=REVERSE, sleep=NO_SLEEP, stop=stop
+    ).build_plan(on_event)
+    assert plan.collections == []  # abandoned after the first track

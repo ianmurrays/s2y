@@ -45,6 +45,8 @@ def _merge_plans(runs: list[tuple[Direction, SyncPlan]]) -> SyncPlan:
         merged.quarantine += plan.quarantine
         merged.matches += plan.matches
         merged.skipped += plan.skipped
+        merged.present += plan.present
+        merged.degraded += plan.degraded
     return merged
 
 
@@ -175,8 +177,8 @@ class SyncScreen(Screen):
             self.query_one("#phase", Static).update(f"Unchanged: {event.name}")
         elif isinstance(event, DedupDegraded):
             self.query_one("#log", RichLog).write(
-                f"⚠ {event.name}: live YouTube check failed — resuming from saved "
-                f"state. {event.detail}"
+                f"⚠ {event.name}: could not read the target — skipped this run, it "
+                f"will retry next run. {event.detail}"
             )
         elif isinstance(event, TrackMatched):
             self._matched += 1
@@ -187,7 +189,7 @@ class SyncScreen(Screen):
             self.query_one("#phase", Static).update(
                 f"Planning: {self._coll_name} ({self._matched}/{self._total}{extra})"
             )
-            self._add_row(event.result)
+            self._add_row(event.result, event.present)
         elif isinstance(event, PhaseStarted) and event.phase == "apply":
             self.query_one("#phase", Static).update("Applying…")
             self.query_one("#bar", ProgressBar).update(total=event.total or None, progress=0)
@@ -199,7 +201,7 @@ class SyncScreen(Screen):
     def on_log_message(self, message: LogMessage) -> None:
         self.query_one("#log", RichLog).write(message.text)
 
-    def _add_row(self, result) -> None:
+    def _add_row(self, result, present: bool) -> None:
         table = self.query_one("#rows", DataTable)
         matched = result.best.title if result.best else "—"
         where = self._coll_name or "—"
@@ -208,7 +210,7 @@ class SyncScreen(Screen):
             matched,
             where,
             f"{result.confidence:.2f}",
-            self._action_label(result.outcome),
+            "already there" if present else self._action_label(result.outcome),
         )
 
     def _action_label(self, outcome: MatchOutcome) -> str:
@@ -232,7 +234,11 @@ class SyncScreen(Screen):
         if creates:
             parts.append(f"{creates} new playlist{'s' if creates != 1 else ''}")
         parts.append(f"{len(plan.quarantine)} need review")
+        if plan.present:
+            parts.append(f"{plan.present} already there")
         parts.append(f"{plan.skipped} unchanged")
+        if plan.degraded:
+            parts.append(f"{len(plan.degraded)} skipped (target unreadable)")
         self.query_one("#summary", Static).update(" · ".join(parts))
         self._apply_ready = not self.dry_run and bool(plan.ops)
         self.refresh_bindings()  # re-evaluate check_action so the footer shows/hides "Apply"

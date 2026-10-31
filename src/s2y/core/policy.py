@@ -7,7 +7,6 @@ are defined now (so the shape is stable) but only exercised from Phase 2/3.
 
 from __future__ import annotations
 
-from collections.abc import Hashable, Iterable
 from enum import StrEnum
 
 
@@ -15,18 +14,6 @@ class ConflictPolicy(StrEnum):
     UNION = "union"  # adds-only, never delete (v1 default)
     MIRROR = "mirror"  # destination becomes an exact copy of source
     TWO_WAY = "two_way"  # propagate adds AND tombstone-backed deletes (Phase 3)
-
-
-def additions[H: Hashable](desired_ordered: Iterable[H], present: set[H]) -> list[H]:
-    """Items in ``desired_ordered`` not already ``present``, order-preserving + deduped."""
-    seen: set[H] = set()
-    out: list[H] = []
-    for item in desired_ordered:
-        if item in present or item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-    return out
 
 
 class CircuitBreaker:

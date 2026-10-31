@@ -16,6 +16,7 @@ a guarded ``track_map`` link for membership/forward reuse.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from .matching import normalize_artist, normalize_title
@@ -23,6 +24,8 @@ from .models import Side
 
 if TYPE_CHECKING:  # types only; no runtime import of the store layer needed here
     from ..store.repository import Repository, TrackMapRow
+
+log = logging.getLogger(__name__)
 
 
 def resolve_quarantine_match(
@@ -104,6 +107,13 @@ def link_track_map(
     if spotify_uri is not None:
         existing = repo.get_track_by_spotify_uri(spotify_uri)
         if existing is not None and existing.yt_video_id and existing.yt_video_id != yt_video_id:
+            log.debug(
+                "link_track_map: no-clobber — %s already maps to videoId %s, keeping it "
+                "(not linking reverse videoId %s); membership attaches by uri",
+                spotify_uri,
+                existing.yt_video_id,
+                yt_video_id,
+            )
             return existing
     return repo.upsert_track(
         spotify_uri=spotify_uri,

@@ -138,6 +138,12 @@ against what already landed) but the signature is **withheld**, so the collectio
 reprocessed and failed adds retry. A round-trip (forward → reverse → forward) is
 provably damped — no echo, no duplicate adds.
 
+**Already there.** A song already in the target collection under a different release
+id isn't added again. Only the same recording counts: equal title once edition tags
+are stripped, matching duration and matching artist, so a live cut or remix is still
+added. If a target collection can't be read, it is skipped for that run and retried on
+the next one.
+
 ## Configuration
 
 State lives under your OS config/data directories (via `platformdirs`), never in

@@ -259,6 +259,38 @@ async def test_sync_table_shows_destination_and_action():
 
 
 @pytest.mark.asyncio
+async def test_sync_table_and_summary_report_present_and_skipped_tracks():
+    from textual.widgets import DataTable, Static
+
+    class PresentEngine(FakeEngine):
+        def build_plan(self, on_event=lambda e: None, *, persist_matches=False):
+            on_event(CollectionStarted("Chill", CollectionKind.PLAYLIST, 1))
+            hit = MatchResult(
+                self.match.source,
+                MatchOutcome.AUTO,
+                YtCandidate("alt", "Song", "Artist"),
+                MatchMethod.PRESENT,
+                1.0,
+            )
+            on_event(TrackMatched(hit, present=True))
+            return SyncPlan(present=1, degraded=["Focus"])
+
+    app = make_app()
+    app._engine_factory = lambda: PresentEngine(app.repo)  # noqa: SLF001
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await _wait(
+            pilot, lambda: isinstance(app.screen, SyncScreen) and app.screen._plan is not None
+        )
+        table = app.screen.query_one("#rows", DataTable)
+        assert table.get_row_at(0)[4] == "already there"
+        summary = str(app.screen.query_one("#summary", Static).render())
+        assert "1 already there" in summary
+        assert "1 skipped (target unreadable)" in summary
+
+
+@pytest.mark.asyncio
 async def test_sync_screen_log_panel_toggles_and_receives_messages():
     from textual.widgets import RichLog
 

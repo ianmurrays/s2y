@@ -91,24 +91,22 @@ class YTMusicClient:
             )
         return out
 
-    def present_playlist_ids(self, playlist_id: str) -> set[str]:
+    def present_playlist_candidates(self, playlist_id: str) -> list[YtCandidate]:
+        """Present playlist tracks with metadata (for content-based dedup)."""
         log.info("YouTube Music: reading existing items of playlist %s…", playlist_id)
         data = (
             self._call(lambda: self._yt.get_playlist(playlist_id, limit=_BIG), "get playlist") or {}
         )
-        ids = {t["videoId"] for t in data.get("tracks", []) or [] if t.get("videoId")}
-        log.info("YouTube Music: playlist %s already has %d items", playlist_id, len(ids))
-        return ids
+        return [c for c in (_candidate(t, is_song=True) for t in data.get("tracks") or []) if c]
 
-    def present_liked_ids(self) -> set[str]:
+    def present_liked_candidates(self) -> list[YtCandidate]:
+        """Present Liked Music with metadata (for content-based dedup)."""
         # This is the (often slow) "what do I already like on YT" fetch that runs
         # right after the Spotify count is known — log around it so it doesn't look
         # like a hang.
         log.info("YouTube Music: reading your existing likes…")
         data = self._call(lambda: self._yt.get_liked_songs(limit=_BIG), "get liked songs") or {}
-        ids = {t["videoId"] for t in data.get("tracks", []) or [] if t.get("videoId")}
-        log.info("YouTube Music: you already like %d songs there", len(ids))
-        return ids
+        return [c for c in (_candidate(t, is_song=True) for t in data.get("tracks") or []) if c]
 
     def present_album_keys(self) -> set[tuple[str, str]]:
         log.info("YouTube Music: reading your library albums…")
@@ -221,6 +219,9 @@ class YTMusicClient:
         if self._name_to_id is None:
             self._name_to_id = {pl.name: pl.id for pl in self.list_playlists()}
         return self._name_to_id
+
+    def find_playlist_id(self, name: str) -> str | None:
+        return self._names().get(name)
 
     def get_or_create_playlist(self, name: str) -> str:
         cache = self._names()
