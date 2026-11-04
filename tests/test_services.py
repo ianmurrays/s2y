@@ -114,6 +114,8 @@ class FakeSpotify:
         return {}
 
     def album_tracks(self, album_id, limit=50):
+        if limit > 50:  # the real endpoint rejects this with an HTTP 400
+            raise RuntimeError("Invalid limit")
         return {
             "items": [
                 {
@@ -246,6 +248,16 @@ def test_spotify_like_song_and_album():
     assert sp.liked_tracks == ["spotify:track:z"]
     assert c.like_album("Band", "Greatest") == "al1"
     assert sp.saved_albums == ["al1"]
+
+
+@pytest.mark.parametrize(
+    ("artist", "album"),
+    [("Someone Else", "Greatest"), ("Band", "Greatest Vol. 2"), ("Band", "Other")],
+)
+def test_spotify_like_album_saves_nothing_without_a_match(artist, album):
+    sp = FakeSpotify()
+    assert SpotifyClient(sp, sleep=NO_SLEEP).like_album(artist, album) is None
+    assert sp.saved_albums == []
 
 
 # --------------------------------------------------------------------------- #
@@ -431,6 +443,16 @@ def test_yt_like_song_and_album():
     browse = c.like_album("Band", "Greatest")
     assert browse == "MPRE1"
     assert yt.rated_playlists == ["OLAK5"]
+
+
+@pytest.mark.parametrize(
+    ("artist", "album"),
+    [("Someone Else", "Greatest"), ("Band", "Greatest Vol. 2"), ("Band", "Other")],
+)
+def test_yt_like_album_rates_nothing_without_a_match(artist, album):
+    yt = FakeYT()
+    assert YTMusicClient(yt, sleep=NO_SLEEP).like_album(artist, album) is None
+    assert yt.rated_playlists == []
 
 
 # --------------------------------------------------------------------------- #

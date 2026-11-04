@@ -12,7 +12,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from ..core.matching import _similarity, normalize_artist, normalize_title
+from ..core.matching import normalize_artist, normalize_title, same_album
 from ..core.models import RemoteAlbum, RemotePlaylist, SongInfo, YtCandidate
 from .base import first_artist, is_transient
 from .ratelimit import SleepFn, chunked, with_retry
@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 # Spotify API page caps.
 _PLAYLIST_PAGE = 50
 _ITEMS_PAGE = 100
+_ALBUM_TRACKS_PAGE = 50
 _SAVED_PAGE = 50
 _ADD_CHUNK = 100  # max uris per playlist_add_items call
 
@@ -203,7 +204,8 @@ class SpotifyClient:
             a_artist = first_artist(alb.get("artists")) or artist
             try:
                 page = self._call(
-                    lambda aid=aid: self._sp.album_tracks(aid, limit=_ITEMS_PAGE), "album tracks"
+                    lambda aid=aid: self._sp.album_tracks(aid, limit=_ALBUM_TRACKS_PAGE),
+                    "album tracks",
                 )
             except Exception:
                 continue
@@ -299,12 +301,13 @@ class SpotifyClient:
             or {}
         )
         albums = (res.get("albums") or {}).get("items") or []
-        want = normalize_title(album)
         for alb in albums[:3]:
             aid = alb.get("id")
             if not aid:
                 continue
-            if _similarity(want, normalize_title(alb.get("name") or "")) < 0.6:
+            if not same_album(
+                album, artist, alb.get("name") or "", first_artist(alb.get("artists"))
+            ):
                 continue
             self._call(lambda aid=aid: self._sp.current_user_saved_albums_add([aid]), "save album")
             return aid

@@ -127,6 +127,16 @@ def test_present_empty_index_returns_none():
     assert _present(_src("Blinding Lights", "The Weeknd", 200), []) is None
 
 
+def test_same_album():
+    assert matching.same_album(
+        "Abbey Road", "The Beatles", "Abbey Road (Deluxe Edition)", "Beatles"
+    )
+    assert not matching.same_album("Abbey Road", "The Beatles", "Abbey Road", "Tribute Band")
+    assert not matching.same_album("Hits", "Band", "Hits Vol. 2", "Band")
+    assert matching.same_album("恋", "歌手", "恋", "歌手")
+    assert not matching.same_album("恋", "歌手", "愛", "歌手")
+
+
 # --------------------------------------------------------------------------- #
 # Normalization
 # --------------------------------------------------------------------------- #

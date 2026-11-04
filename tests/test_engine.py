@@ -475,6 +475,17 @@ def test_matching_persisted_incrementally_avoids_research(repo, config):
     assert yt.search_calls == 0  # everything resolved from the incrementally-built cache
 
 
+def test_unmatched_album_counts_as_failed_and_retries(repo, config):
+    spotify, yt = make_world()
+    yt.like_album = lambda artist, album: None
+    eng = Engine(spotify, yt, repo, config, sleep=NO_SLEEP)
+    stats = eng.apply_plan(eng.build_plan())
+    assert stats["failed"] == 1
+
+    plan2 = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
+    assert [op.kind for op in plan2.ops] == [OpKind.ADD_LIBRARY_ALBUM]  # signature withheld
+
+
 def test_dry_run_build_plan_opens_no_run(repo, config):
     """A read-only plan (persist_matches=False, the default) opens no sync_run row
     and writes no track_map — so dry runs never pollute resume state."""

@@ -341,7 +341,9 @@ class Engine:
         elif op.kind is OpKind.ADD_LIBRARY_ALBUM:
             artist = op.source.artist if op.source else ""
             album = op.source.title if op.source else op.collection
-            self._target.like_album(artist, album)
+            # A failure, so the signature is withheld and the album is retried next run.
+            if self._target.like_album(artist, album) is None:
+                raise LookupError(f"no matching album on the target: {album!r} by {artist!r}")
         else:  # pragma: no cover - exhaustive
             raise ValueError(f"unknown op kind: {op.kind}")
         return None

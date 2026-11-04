@@ -20,7 +20,7 @@ from typing import Any
 
 from ytmusicapi import LikeStatus
 
-from ..core.matching import _similarity, normalize_artist, normalize_title
+from ..core.matching import normalize_artist, normalize_title, same_album
 from ..core.models import RemoteAlbum, RemotePlaylist, SongInfo, YtCandidate
 from .base import ServiceError, first_artist, is_transient
 from .ratelimit import SleepFn, with_retry
@@ -255,7 +255,6 @@ class YTMusicClient:
         albums = (
             self._call(lambda: self._yt.search(f"{album} {artist}", filter="albums", limit=3)) or []
         )
-        want = normalize_title(album)
         for a in albums[:3]:
             browse_id = a.get("browseId")
             if not browse_id:
@@ -264,7 +263,9 @@ class YTMusicClient:
                 full = self._call(lambda bid=browse_id: self._yt.get_album(bid))
             except Exception:
                 continue
-            if _similarity(want, normalize_title(full.get("title") or "")) < 0.6:
+            if not same_album(
+                album, artist, full.get("title") or "", first_artist(full.get("artists"))
+            ):
                 continue
             audio_pl = full.get("audioPlaylistId")
             if audio_pl:

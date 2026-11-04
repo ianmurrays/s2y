@@ -266,6 +266,18 @@ class PresentIndex:
         return None if best is None else (best, best_sim)
 
 
+def same_album(album: str, artist: str, cand_album: str, cand_artist: str) -> bool:
+    """Whether a search result is the requested album: saving a wrong one can't be undone
+    by a re-run, so this needs an equal title after edition tags and the artist gate."""
+    # ponytail: compares one artist per side; compare all credits if collab albums fail.
+    title = _title_key(album)
+    return (
+        bool(title)
+        and title == _title_key(cand_album)
+        and _similarity(_word_key(artist), _word_key(cand_artist)) >= _ARTIST_GATE
+    )
+
+
 # --------------------------------------------------------------------------- #
 # The cascade
 # --------------------------------------------------------------------------- #
