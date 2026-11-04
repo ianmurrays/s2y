@@ -12,7 +12,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from ..core.matching import normalize_artist, normalize_title, same_album
+from ..core.matching import album_key, same_album
 from ..core.models import RemoteAlbum, RemotePlaylist, SongInfo, YtCandidate
 from .base import first_artist, is_transient
 from .ratelimit import SleepFn, chunked, with_retry
@@ -130,12 +130,8 @@ class SpotifyClient:
         keys: set[tuple[str, str]] = set()
         for item in self._paginate(first, what="saved albums"):
             alb = (item or {}).get("album") or {}
-            keys.add(
-                (
-                    normalize_artist(first_artist(alb.get("artists"))),
-                    normalize_title(alb.get("name") or ""),
-                )
-            )
+            if key := album_key(first_artist(alb.get("artists")), alb.get("name") or ""):
+                keys.add(key)
         return keys
 
     def present_playlist_candidates(self, playlist_id: str) -> list[YtCandidate]:

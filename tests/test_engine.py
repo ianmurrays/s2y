@@ -16,7 +16,7 @@ from s2y.core.events import (
     PhaseFinished,
     PhaseStarted,
 )
-from s2y.core.matching import normalize_artist, normalize_title
+from s2y.core.matching import album_key
 from s2y.core.models import (
     ClassifyDecision,
     ClassifyVerdict,
@@ -129,7 +129,8 @@ class FakeYT:
 
     def like_album(self, artist, album):
         self.album_likes.append((artist, album))
-        self._album_keys.add((normalize_artist(artist), normalize_title(album)))
+        if key := album_key(artist, album):
+            self._album_keys.add(key)
         return "MPRE-x"
 
 
@@ -725,3 +726,17 @@ def test_classify_emits_progress_narration(repo):
     # One progress tick per track, and the phase is closed out.
     assert sum(e.amount for e in events if isinstance(e, Advanced)) == 3
     assert any(isinstance(e, PhaseFinished) and e.phase == "classify" for e in events)
+
+
+def test_non_latin_album_is_not_skipped_as_present(repo, config):
+    """Issue #3: a fully non-Latin album must not match a different one already liked."""
+    spotify, yt = make_world()
+    spotify._albums = [
+        RemoteAlbum(id="al1", name="初恋", artist="宇多田ヒカル"),
+        RemoteAlbum(id="al2", name="愛", artist="別の歌手"),
+        RemoteAlbum(id="al3", name="(Deluxe)", artist="歌手"),  # unkeyable: never "present"
+    ]
+    yt.like_album("宇多田ヒカル", "初恋")  # already in the target library
+    plan = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
+    albums = [op.note for op in plan.ops if op.kind is OpKind.ADD_LIBRARY_ALBUM]
+    assert albums == ["al2", "al3"]

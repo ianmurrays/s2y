@@ -20,7 +20,7 @@ from typing import Any
 
 from ytmusicapi import LikeStatus
 
-from ..core.matching import normalize_artist, normalize_title, same_album
+from ..core.matching import album_key, same_album
 from ..core.models import RemoteAlbum, RemotePlaylist, SongInfo, YtCandidate
 from .base import ServiceError, first_artist, is_transient
 from .ratelimit import SleepFn, with_retry
@@ -113,9 +113,8 @@ class YTMusicClient:
         raw = self._call(lambda: self._yt.get_library_albums(limit=_BIG), "library albums") or []
         keys: set[tuple[str, str]] = set()
         for a in raw:
-            title = a.get("title") or ""
-            artist = first_artist(a.get("artists"))
-            keys.add((normalize_artist(artist), normalize_title(title)))
+            if key := album_key(first_artist(a.get("artists")), a.get("title") or ""):
+                keys.add(key)
         return keys
 
     # ----- rich reads (source role: YouTube Music -> Spotify) --------------- #

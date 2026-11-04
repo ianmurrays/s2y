@@ -454,8 +454,8 @@ def _plan_liked_albums(plan, source, target, repo, direction, on_event, stop=_NE
     for alb in albums:
         if stop.is_set():
             return
-        akey = (matching.normalize_artist(alb.artist), matching.normalize_title(alb.name))
-        if akey in present:
+        akey = matching.album_key(alb.artist, alb.name)
+        if akey is not None and akey in present:
             plan.skipped += 1
             continue
         plan.ops.append(
