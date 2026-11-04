@@ -81,7 +81,10 @@ class MusicTarget(Protocol):
     def like_song(self, video_id: str) -> None: ...
 
     def like_album(self, artist: str, album: str) -> str | None:
-        """Find the album and add it to the library. Returns its id, or None."""
+        """Find the album and add it to the library. Returns its id, or None.
+
+        YouTube Music likes the single's song instead (returning its video id) when it
+        has no release for the album."""
 
 
 # Forward-era import names, kept as aliases so existing call sites keep working.
