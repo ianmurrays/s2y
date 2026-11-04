@@ -68,6 +68,8 @@ class FakeEngine:
     def __init__(self, repo, spotify=None):
         self.repo = repo
         self.spotify = spotify if spotify is not None else _FakeSpotify()
+        # The playlist picker lists the source service via engine().source.
+        self.source = self.spotify
         src = SongInfo("Song", "Artist", spotify_uri="spotify:track:1")
         self.match = MatchResult(
             src, MatchOutcome.AUTO, YtCandidate("v1", "Song", "Artist"), MatchMethod.META, 0.95
@@ -129,8 +131,9 @@ class FakeEngine:
                 resolve_quarantine_match(
                     self.repo,
                     quarantine_id=row["id"],
-                    spotify_uri=row["source_uri"],
-                    yt_video_id=best["video_id"],
+                    source_side=row["source_side"],
+                    source_uri=row["source_uri"],
+                    target_id=best["video_id"],
                     title=row["title"],
                     artist=row["artist"],
                     match_method="claude",
@@ -253,6 +256,38 @@ async def test_sync_table_shows_destination_and_action():
         assert first[4] == "add to playlist"  # an AUTO match into a playlist
         actions = [table.get_row_at(r)[4] for r in range(table.row_count)]
         assert "review" in actions  # the quarantined track is flagged
+
+
+@pytest.mark.asyncio
+async def test_sync_table_and_summary_report_present_and_skipped_tracks():
+    from textual.widgets import DataTable, Static
+
+    class PresentEngine(FakeEngine):
+        def build_plan(self, on_event=lambda e: None, *, persist_matches=False):
+            on_event(CollectionStarted("Chill", CollectionKind.PLAYLIST, 1))
+            hit = MatchResult(
+                self.match.source,
+                MatchOutcome.AUTO,
+                YtCandidate("alt", "Song", "Artist"),
+                MatchMethod.PRESENT,
+                1.0,
+            )
+            on_event(TrackMatched(hit, present=True))
+            return SyncPlan(present=1, degraded=["Focus"])
+
+    app = make_app()
+    app._engine_factory = lambda: PresentEngine(app.repo)  # noqa: SLF001
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("d")
+        await _wait(
+            pilot, lambda: isinstance(app.screen, SyncScreen) and app.screen._plan is not None
+        )
+        table = app.screen.query_one("#rows", DataTable)
+        assert table.get_row_at(0)[4] == "already there"
+        summary = str(app.screen.query_one("#summary", Static).render())
+        assert "1 already there" in summary
+        assert "1 skipped (target unreadable)" in summary
 
 
 @pytest.mark.asyncio
@@ -612,3 +647,83 @@ async def test_settings_summary_refreshes_after_picker():
         await _wait(pilot, lambda: isinstance(app.screen, SettingsScreen))
         refreshed = await _wait(pilot, lambda: "none" in summary())
         assert refreshed
+
+
+@pytest.mark.asyncio
+async def test_dashboard_cycles_direction_and_persists():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, DashboardScreen)
+        assert app.screen._choice == "spotify_to_yt"
+        await pilot.press("x")  # cycle
+        await pilot.pause()
+        assert app.screen._choice == "yt_to_spotify"
+        assert app.config.sync.direction == "yt_to_spotify"  # persisted via save_config
+
+
+@pytest.mark.asyncio
+async def test_both_ways_dry_run_builds_two_direction_plan():
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("x")  # -> yt_to_spotify
+        await pilot.press("x")  # -> both
+        await pilot.pause()
+        assert app.screen._choice == "both"
+        await pilot.press("d")  # dry run, both ways
+        ok = await _wait(
+            pilot, lambda: isinstance(app.screen, SyncScreen) and app.screen._plan is not None
+        )
+        assert ok
+        assert len(app.screen._directions) == 2  # forward + reverse
+        # The merged plan combines both directions (FakeEngine emits one op each).
+        assert len(app.screen._plan.ops) == 2
+
+
+@pytest.mark.asyncio
+async def test_settings_saves_direction():
+    from textual.widgets import Button, Select
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")  # settings
+        await _wait(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        app.screen.query_one("#direction", Select).value = "yt_to_spotify"
+        app.screen.query_one("#save", Button).press()
+        await pilot.pause()
+        assert app.config.sync.direction == "yt_to_spotify"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_resyncs_direction_after_settings_change():
+    from textual.widgets import Button, Select
+
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.screen._choice == "spotify_to_yt"
+        await pilot.press("g")  # settings
+        await _wait(pilot, lambda: isinstance(app.screen, SettingsScreen))
+        app.screen.query_one("#direction", Select).value = "yt_to_spotify"
+        app.screen.query_one("#save", Button).press()
+        await pilot.pause()
+        app.screen.query_one("#back", Button).press()  # back to the dashboard
+        await _wait(pilot, lambda: isinstance(app.screen, DashboardScreen))
+        await pilot.pause()
+        # The dashboard re-syncs its per-run choice from config on resume, so 'd'/'s'
+        # and the header reflect the just-saved direction instead of the stale one.
+        assert app.screen._choice == "yt_to_spotify"
+
+
+def test_make_engine_restores_default_direction_and_uncaches():
+    from s2y.core.models import FORWARD, REVERSE
+
+    app = make_app()
+    eng = app.make_engine(REVERSE)
+    assert eng is not None
+    # make_engine must not leave the per-run direction (or engine) as the default,
+    # or a later plain engine()/classify would silently inherit the last run's side.
+    assert app._pending_direction == FORWARD  # restored to config default  # noqa: SLF001
+    assert app._engine is None  # noqa: SLF001

@@ -81,13 +81,19 @@ class FakeYT:
     def list_playlists(self):
         return [RemotePlaylist(id=i, name=n) for n, i in self._pl_name_to_id.items()]
 
-    def playlist_video_ids(self, pid):
-        return set(self._pl_contents.get(pid, set()))
+    def find_playlist_id(self, name):
+        return self._pl_name_to_id.get(name)
 
-    def liked_video_ids(self):
-        return set(self._liked)
+    def _cand_by_vid(self, vid):
+        return next((c for c in self.catalog.values() if c.video_id == vid), None)
 
-    def library_album_keys(self):
+    def present_playlist_candidates(self, pid):
+        return [c for c in map(self._cand_by_vid, self._pl_contents.get(pid, set())) if c]
+
+    def present_liked_candidates(self):
+        return [c for c in map(self._cand_by_vid, self._liked) if c]
+
+    def present_album_keys(self):
         return set(self._album_keys)
 
     def search_songs(self, query, *, limit=6):
@@ -426,7 +432,7 @@ def test_resume_dedups_via_membership_when_live_read_empty(repo, config):
     )
 
     # Simulate a live read that knows nothing (signed back in, cache cold).
-    yt.playlist_video_ids = lambda pid: set()
+    yt.present_playlist_candidates = lambda pid: []
     plan2 = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
     add_ids = [op.video_id for op in plan2.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
     assert "yv1" not in add_ids  # known-landed via membership — NOT re-added
@@ -434,8 +440,8 @@ def test_resume_dedups_via_membership_when_live_read_empty(repo, config):
 
 
 def test_live_dedup_failure_degrades_instead_of_aborting(repo, config):
-    """A signed-out live read must not take down the whole re-run; it degrades to
-    the persisted membership and emits DedupDegraded."""
+    """A signed-out live read must not take down the whole re-run: the collection is
+    skipped, reported, and retried next run (its signature stays withheld)."""
     spotify, yt = make_world()
     eng = Engine(spotify, yt, repo, config, sleep=NO_SLEEP)
     eng.apply_plan(eng.build_plan())  # full apply -> membership {yv1, yv2}
@@ -443,14 +449,15 @@ def test_live_dedup_failure_degrades_instead_of_aborting(repo, config):
     def boom(pid):
         raise RuntimeError("signinendpoint: please sign in")
 
-    yt.playlist_video_ids = boom
+    yt.present_playlist_candidates = boom
     spotify._playlists = [RemotePlaylist(id="sp1", name="Chill", count=2, snapshot_id="snap-2")]
 
     events: list = []
     plan2 = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan(events.append)
     assert any(isinstance(e, DedupDegraded) for e in events)  # did not raise
-    add_ids = [op.video_id for op in plan2.ops if op.kind is OpKind.ADD_PLAYLIST_ITEM]
-    assert add_ids == []  # persisted membership covers both tracks
+    assert plan2.ops == []
+    assert plan2.degraded == ["Chill"]
+    assert plan2.collections == []  # no new signature, so the next run reprocesses it
 
 
 def test_matching_persisted_incrementally_avoids_research(repo, config):
@@ -466,6 +473,17 @@ def test_matching_persisted_incrementally_avoids_research(repo, config):
     spotify._playlists = [RemotePlaylist(id="sp1", name="Chill", count=2, snapshot_id="snap-2")]
     Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
     assert yt.search_calls == 0  # everything resolved from the incrementally-built cache
+
+
+def test_unmatched_album_counts_as_failed_and_retries(repo, config):
+    spotify, yt = make_world()
+    yt.like_album = lambda artist, album: None
+    eng = Engine(spotify, yt, repo, config, sleep=NO_SLEEP)
+    stats = eng.apply_plan(eng.build_plan())
+    assert stats["failed"] == 1
+
+    plan2 = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
+    assert [op.kind for op in plan2.ops] == [OpKind.ADD_LIBRARY_ALBUM]  # signature withheld
 
 
 def test_dry_run_build_plan_opens_no_run(repo, config):

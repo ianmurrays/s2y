@@ -8,7 +8,9 @@ from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Checkbox, Footer, Header, Input, Label, Static
+from textual.widgets import Button, Checkbox, Footer, Header, Input, Label, Select, Static
+
+from ..labels import CHOICES, choice_label
 
 if TYPE_CHECKING:
     from ..app import S2YApp
@@ -24,6 +26,19 @@ class SettingsScreen(Screen):
         cfg = self.app.config
         yield Header()
         with VerticalScroll(id="settings"):
+            with Vertical(classes="card"):
+                yield Label("[b]Sync direction[/b]")
+                yield Static(
+                    "Default direction. The dashboard can override it per run (press x there).",
+                    classes="help",
+                )
+                yield Select(
+                    [(choice_label(c), c) for c in CHOICES],
+                    value=cfg.sync.direction if cfg.sync.direction in CHOICES else "spotify_to_yt",
+                    id="direction",
+                    allow_blank=False,
+                )
+
             with Vertical(classes="card"):
                 yield Label("[b]Collections[/b]")
                 # The picker (PlaylistsScreen) is the single owner of which
@@ -56,6 +71,7 @@ class SettingsScreen(Screen):
     @on(Button.Pressed, "#save")
     def _save(self) -> None:
         cfg = self.app.config
+        cfg.sync.direction = str(self.query_one("#direction", Select).value)
         # sync_playlists / selected_playlists are owned by the playlist picker;
         # Settings never writes them. Liked Songs/Albums stay all-or-nothing here.
         cfg.collections.sync_liked_songs = self.query_one("#c_ls", Checkbox).value

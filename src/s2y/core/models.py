@@ -24,6 +24,33 @@ class CollectionKind(StrEnum):
     LIKED_ALBUMS = "liked_albums"
 
 
+class Side(StrEnum):
+    """A music service, as the stable string used across the store and engine."""
+
+    SPOTIFY = "spotify"
+    YT = "yt"
+
+
+@dataclass(frozen=True)
+class Direction:
+    """Which way a sync flows, plus the few service-specific bindings the engine
+    needs to stay honest about it.
+
+    ``source`` is read; ``target`` is written. ``source_sig_col`` names the
+    ``playlist_map`` column that holds this direction's change-detect signature
+    (forward uses Spotify's ``snapshot_id``; reverse uses a content fingerprint of
+    the YouTube id set, since YT has no snapshot token).
+    """
+
+    source: Side
+    target: Side
+    source_sig_col: str
+
+
+FORWARD = Direction(Side.SPOTIFY, Side.YT, "spotify_snapshot_id")
+REVERSE = Direction(Side.YT, Side.SPOTIFY, "yt_content_fingerprint")
+
+
 class MatchMethod(StrEnum):
     """How a Spotify track was resolved to a YouTube Music ``videoId``."""
 
@@ -32,6 +59,7 @@ class MatchMethod(StrEnum):
     META = "meta"  # normalized title+artist, duration-gated
     FUZZY = "fuzzy"
     MANUAL = "manual"  # a human resolved it in the review screen
+    PRESENT = "present"  # already in the target collection by content; never cached
 
 
 class MatchOutcome(StrEnum):
@@ -56,11 +84,19 @@ class SongInfo:
     duration_ms: int | None = None
     isrc: str | None = None
     spotify_uri: str | None = None
-    added_at: str | None = None  # ISO-8601, as Spotify reports it
+    # Set when this song's *source* is YouTube Music (reverse sync). A song always
+    # carries its real id in its own service's field — never a foreign id in
+    # ``spotify_uri`` — so the store boundary stays honest. See :class:`Direction`.
+    yt_video_id: str | None = None
+    added_at: str | None = None  # ISO-8601, as the source service reports it
 
     @property
     def duration_s(self) -> float | None:
         return None if self.duration_ms is None else self.duration_ms / 1000.0
+
+    def source_ref(self, side: Side) -> str | None:
+        """This song's id on ``side`` — its identifier when ``side`` is the source."""
+        return self.spotify_uri if side == Side.SPOTIFY else self.yt_video_id
 
 
 @dataclass(frozen=True)
@@ -69,6 +105,10 @@ class YtCandidate:
 
     ``raw`` keeps the original ytmusicapi dict for debugging/extra fields and is
     excluded from equality so candidates dedupe by ``video_id`` cleanly.
+
+    ``video_id`` is an opaque match key to the pure matcher. In a reverse sync it
+    actually carries a Spotify ``uri`` (the candidate is a Spotify track); the engine
+    maps it to the right store column by :class:`Direction`, never writing it blindly.
     """
 
     video_id: str
@@ -173,9 +213,12 @@ class SyncOp:
     kind: OpKind
     collection: str  # logical collection name (e.g. "Chill", "Liked Songs")
     collection_kind: CollectionKind
-    collection_key: str = ""  # stable key for grouping (spotify id / "liked_songs")
+    collection_key: str = ""  # stable key for grouping (source playlist id / "liked_songs")
     source: SongInfo | None = None
-    video_id: str | None = None  # ADD_PLAYLIST_ITEM / LIKE_SONG
+    # The *target* id for ADD_PLAYLIST_ITEM / LIKE_SONG: a YouTube videoId (forward)
+    # or a Spotify uri (reverse). Named ``video_id`` for forward-history reasons; the
+    # engine routes it to the right target call by :class:`Direction`.
+    video_id: str | None = None
     album_browse_id: str | None = None  # ADD_LIBRARY_ALBUM
     note: str = ""
 
@@ -196,8 +239,11 @@ class CollectionSig:
     key: str
     name: str
     kind: CollectionKind
+    # The source playlist's id (forward: a Spotify id; reverse: a YouTube id). The
+    # engine persists it into the matching ``playlist_map`` column by :class:`Direction`.
     spotify_playlist_id: str | None
-    signature: str
+    yt_playlist_id: str | None = None
+    signature: str = ""
 
 
 @dataclass
@@ -211,6 +257,8 @@ class SyncPlan:
     ops: list[SyncOp] = field(default_factory=list)
     quarantine: list[MatchResult] = field(default_factory=list)
     matches: list[MatchResult] = field(default_factory=list)  # AUTO/CACHED, to cache
+    present: int = 0  # tracks already on the target (exact id or same recording): no op
+    degraded: list[str] = field(default_factory=list)  # skipped: target could not be read
     collections: list[CollectionSig] = field(default_factory=list)
     skipped: int = 0  # already-synced items that produced no op
     stats: dict = field(default_factory=dict)

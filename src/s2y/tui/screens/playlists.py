@@ -27,16 +27,14 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Label, SelectionList, Static
 from textual.widgets.selection_list import Selection
 
+from ...core.models import Side
+from ...session import direction_from_config
+from ..labels import service_name
 from ..messages import PlaylistsLoaded, WorkerFailed
 from ..threads import run_detached
 
 if TYPE_CHECKING:
     from ..app import S2YApp
-
-_HELP = (
-    "Checked playlists sync. New Spotify playlists don't sync until you check them. "
-    "Uncheck all to stop syncing playlists entirely."
-)
 
 
 class PlaylistsScreen(Screen):
@@ -48,13 +46,17 @@ class PlaylistsScreen(Screen):
     def __init__(self) -> None:
         super().__init__()
         self._loaded = False  # gates Save: never write a selection before data arrives
+        # The picker edits the SOURCE side of the configured direction (its own
+        # allow-list, since the two services' id-spaces don't overlap).
+        self._side: Side = Side.SPOTIFY
+        self._sel_attr = "selected_playlists"
 
     def compose(self) -> ComposeResult:
         yield Header()
         with VerticalScroll(id="playlists"):
             with Vertical(classes="card"):
                 yield Label("[b]Choose playlists to sync[/b]")
-                yield Static(_HELP, classes="help")
+                yield Static(id="pl_help", classes="help")  # text set on mount (per direction)
                 yield SelectionList(id="pl_list")  # populated by the worker
             with Horizontal(id="playlists_controls"):
                 yield Button("Select all", id="pl_all", disabled=True)
@@ -66,7 +68,17 @@ class PlaylistsScreen(Screen):
 
     # ----- lifecycle (mirrors SyncScreen) ----------------------------------- #
     def on_mount(self) -> None:
-        self.query_one("#playlists_status", Static).update("Loading playlists…")
+        direction = direction_from_config(self.app.config)
+        self._side = direction.source
+        self._sel_attr = (
+            "selected_playlists" if self._side == Side.SPOTIFY else "selected_yt_playlists"
+        )
+        svc = service_name(self._side)
+        self.query_one("#pl_help", Static).update(
+            f"Choosing {svc} playlists to sync. New {svc} playlists don't sync until you "
+            "check them. Uncheck all to stop syncing playlists entirely."
+        )
+        self.query_one("#playlists_status", Static).update(f"Loading {svc} playlists…")
         self.app.stop.clear()  # re-arm: a prior screen's unmount may have set it
         self.load_playlists()
 
@@ -79,8 +91,12 @@ class PlaylistsScreen(Screen):
     async def load_playlists(self) -> None:
         try:
             # Resolve (and lazily build) the engine INSIDE the thread — building it
-            # opens the API clients, which would block the UI thread.
-            pls = await run_detached(lambda: self.app.engine().spotify.list_playlists())
+            # opens the API clients, which would block the UI thread. The picker edits
+            # the SOURCE side of the configured direction.
+            direction = direction_from_config(self.app.config)
+            pls = await run_detached(
+                lambda: self.app.make_engine(direction).source.list_playlists()
+            )
         except Exception as exc:  # noqa: BLE001
             self.post_message(WorkerFailed("playlists", str(exc)))
             return
@@ -91,7 +107,7 @@ class PlaylistsScreen(Screen):
         if not self.is_mounted:  # a late post to an unmounted screen
             return
         cols = self.app.config.collections
-        selected = set(cols.selected_playlists)
+        selected = set(getattr(cols, self._sel_attr))
         # [] sentinel means "all" — but only while playlists are actually enabled.
         check_all = (not selected) and cols.sync_playlists
         sel = self.query_one("#pl_list", SelectionList)
@@ -108,7 +124,7 @@ class PlaylistsScreen(Screen):
         self.query_one("#playlists_status", Static).update(
             f"{n} playlist{'s' if n != 1 else ''}. Checked ones will sync."
             if n
-            else "No playlists found on Spotify."
+            else f"No playlists found on {service_name(self._side)}."
         )
 
     def on_worker_failed(self, message: WorkerFailed) -> None:
@@ -136,8 +152,10 @@ class PlaylistsScreen(Screen):
         cols = self.app.config.collections
         # >=1 checked -> enable + explicit allow-list; 0 checked -> disable playlists.
         # This makes []+sync_playlists=True (the "sync ALL" state) unreachable here.
+        # sync_playlists is a shared master toggle across both directions; the allow-list
+        # is per-side (selected_playlists / selected_yt_playlists).
         cols.sync_playlists = bool(ids)
-        cols.selected_playlists = ids
+        setattr(cols, self._sel_attr, ids)
         self.app.save_config()
         n = len(ids)
         self.query_one("#playlists_status", Static).update(

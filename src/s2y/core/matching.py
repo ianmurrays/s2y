@@ -32,6 +32,7 @@ from .models import MatchMethod, MatchOutcome, MatchResult, SongInfo, YtCandidat
 AUTO_ACCEPT = 0.82  # >= this => accept without asking
 REVIEW_FLOOR = 0.50  # >= this (but < AUTO) => quarantine WITH a best candidate
 DURATION_TOL_S = 4  # treat durations within this many seconds as equal
+_ARTIST_GATE = 0.7  # below this the artist is dubious (see score_candidate)
 
 
 class MatchSearch(Protocol):
@@ -71,6 +72,7 @@ _FEAT = re.compile(r"\b(feat\.?|ft\.?|featuring)\b.*", re.IGNORECASE)
 _BRACKETS = re.compile(r"[\(\[\{][^\)\]\}]*[\)\]\}]")
 _DASH_SPLIT = re.compile(r"\s+-\s+")
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+_NON_WORD = re.compile(r"[\W_]+")
 
 
 def fold_accents(text: str) -> str:
@@ -131,6 +133,17 @@ def normalize_artist(artist: str) -> str:
     return " ".join(a.split())
 
 
+def _word_key(text: str) -> str:
+    """Like :func:`normalize_artist`, but keeps non-Latin letters."""
+    folded = fold_accents(_FEAT.sub("", text or "").casefold())
+    return " ".join(_NON_WORD.sub(" ", folded).split())
+
+
+def _title_key(title: str) -> str:
+    """Like :func:`normalize_title`, but keeps non-Latin letters."""
+    return _word_key(_drop_edition_segments(_drop_edition_brackets(title or "")))
+
+
 def canonical_key(song: SongInfo) -> tuple[str, str]:
     """Stable (title, artist) key used for dedup and the track_map canon columns."""
     return normalize_title(song.title), normalize_artist(song.artist)
@@ -186,7 +199,7 @@ def score_candidate(
     # Genuinely different artists that merely share a word (e.g. "Real Band" vs
     # "Cover Band") land around 0.6-0.65, so the gate sits at 0.7; exact and
     # containment matches ("The Weeknd" vs "Weeknd") score >= 0.9 and pass.
-    if artist_sim < 0.7:
+    if artist_sim < _ARTIST_GATE:
         score *= 0.7
 
     # Duration gate — the key accuracy improvement over the reference. Small
@@ -205,6 +218,64 @@ def score_candidate(
         score *= 0.85
 
     return max(0.0, min(1.0, score))
+
+
+# --------------------------------------------------------------------------- #
+# Content dedup: "is this song already in the target collection?"
+# --------------------------------------------------------------------------- #
+class PresentIndex:
+    """Index of the tracks already in a target collection, for content-based dedup.
+
+    Exact-id (uri/videoId) dedup misses the common cross-service case where the same
+    recording sits under a *different* release id on each service, with the artist even
+    spelled differently ("Cat Stevens" vs "Yusuf / Cat Stevens"). A wrong hit here means
+    a track silently never syncs, so this is stricter than :func:`score_candidate`: the
+    title must be equal once edition tags are stripped (so "(Live)"/"(Remix)"/"Pt. 2"
+    stay distinct), both durations must be known and within tolerance, and the artist
+    must clear the matcher's artist gate. Anything less is proposed as an add.
+
+    Keys keep non-Latin letters, unlike :func:`normalize_title`, which reduces "恋 2" and
+    "愛 2" to the same "2". The blind spot is a cross-language title rename ("Hijo de la
+    Luna" / "Figlio della luna") — a rare, acceptable miss (it just gets added).
+    """
+
+    def __init__(
+        self, candidates: list[YtCandidate], *, duration_tol_s: int = DURATION_TOL_S
+    ) -> None:
+        self._tol = duration_tol_s
+        self._by_title: dict[str, list[tuple[YtCandidate, str]]] = {}
+        for c in candidates:
+            title = _title_key(c.title)
+            if c.video_id and title and c.duration_s is not None:
+                self._by_title.setdefault(title, []).append((c, _word_key(c.artist)))
+
+    def find(self, source: SongInfo) -> tuple[YtCandidate, float] | None:
+        """The present candidate that is ``source``, with its artist similarity, or ``None``."""
+        title = _title_key(source.title)
+        if not title or source.duration_s is None:
+            return None
+        artist = _word_key(source.artist)
+        best: YtCandidate | None = None
+        best_sim = 0.0
+        for c, c_artist in self._by_title.get(title, ()):
+            if abs(source.duration_s - (c.duration_s or 0)) > self._tol:
+                continue
+            sim = _similarity(artist, c_artist)
+            if sim >= _ARTIST_GATE and sim > best_sim:
+                best_sim, best = sim, c
+        return None if best is None else (best, best_sim)
+
+
+def same_album(album: str, artist: str, cand_album: str, cand_artist: str) -> bool:
+    """Whether a search result is the requested album: saving a wrong one can't be undone
+    by a re-run, so this needs an equal title after edition tags and the artist gate."""
+    # ponytail: compares one artist per side; compare all credits if collab albums fail.
+    title = _title_key(album)
+    return (
+        bool(title)
+        and title == _title_key(cand_album)
+        and _similarity(_word_key(artist), _word_key(cand_artist)) >= _ARTIST_GATE
+    )
 
 
 # --------------------------------------------------------------------------- #

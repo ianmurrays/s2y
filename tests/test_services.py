@@ -82,6 +82,66 @@ class FakeSpotify:
     def next(self, page):
         return page.get("_next_page")
 
+    # ----- target role (reverse sync) ----- #
+    def __init__(self):
+        self.created: list[tuple[str, str]] = []  # (user, name)
+        self.added: list[tuple[str, list[str]]] = []
+        self.liked_tracks: list[str] = []
+        self.saved_albums: list[str] = []
+
+    def search(self, q=None, type=None, limit=10, **kw):
+        if type == "track":
+            return {
+                "tracks": {
+                    "items": [
+                        {
+                            "name": "Song A",
+                            "uri": "spotify:track:a",
+                            "duration_ms": 200000,
+                            "artists": [{"name": "Artist A"}],
+                            "album": {"name": "Album"},
+                        },
+                        {"name": "No uri", "artists": [{"name": "X"}]},  # dropped
+                    ]
+                }
+            }
+        if type == "album":
+            return {
+                "albums": {
+                    "items": [{"id": "al1", "name": "Greatest", "artists": [{"name": "Band"}]}]
+                }
+            }
+        return {}
+
+    def album_tracks(self, album_id, limit=50):
+        if limit > 50:  # the real endpoint rejects this with an HTTP 400
+            raise RuntimeError("Invalid limit")
+        return {
+            "items": [
+                {
+                    "name": "Track 1",
+                    "uri": "spotify:track:t1",
+                    "duration_ms": 180000,
+                    "artists": [{"name": "Band"}],
+                }
+            ],
+            "next": None,
+        }
+
+    def user_playlist_create(self, user, name, public=True, collaborative=False, description=""):
+        self.created.append((user, name))
+        return {"id": "newpl", "name": name}
+
+    def playlist_add_items(self, playlist_id, items, position=None):
+        self.added.append((playlist_id, list(items)))
+        return {"snapshot_id": "snap"}
+
+    def current_user_saved_tracks_add(self, tracks):
+        self.liked_tracks.extend(tracks)
+
+    def current_user_saved_albums_add(self, albums):
+        self.saved_albums.extend(albums)
+
 
 def test_spotify_verify():
     assert SpotifyClient(FakeSpotify(), sleep=NO_SLEEP).verify() == "Ian"
@@ -110,6 +170,96 @@ def test_spotify_liked_songs_and_albums():
     assert albums[0].artist == "Band"
 
 
+# ----- Spotify target role (reverse sync) ----- #
+def test_spotify_present_candidates():
+    c = SpotifyClient(FakeSpotify(), sleep=NO_SLEEP)
+    # Null track + local dropped, and the second page is read.
+    tracks = c.present_playlist_candidates("p1")
+    assert [(t.video_id, t.title, t.artist, t.duration_s) for t in tracks] == [
+        ("spotify:track:a", "Song A", "Artist A", 200),
+        ("spotify:track:b", "Song B", "Artist B", 200),
+    ]
+    liked = c.present_liked_candidates()
+    assert [(t.video_id, t.title, t.artist, t.duration_s) for t in liked] == [
+        ("spotify:track:l", "Liked", "Lk", 200)
+    ]
+    assert c.present_album_keys() == {("band", "greatest")}
+
+
+def test_spotify_present_candidates_drops_episodes():
+    fake = FakeSpotify()
+    fake.playlist_items = lambda pid, limit=100, additional_types=("track",): {
+        "items": [_track("Ep", "Host", "spotify:episode:e", ttype="episode")],
+        "next": None,
+    }
+    assert SpotifyClient(fake, sleep=NO_SLEEP).present_playlist_candidates("p1") == []
+
+
+def test_spotify_find_playlist_id_has_no_side_effects():
+    fake = FakeSpotify()
+    c = SpotifyClient(fake, sleep=NO_SLEEP)
+    assert c.find_playlist_id("Two") == "p2"
+    assert c.find_playlist_id("Missing") is None
+    assert fake.created == []
+
+
+def test_spotify_search_candidate_duration_is_seconds():
+    c = SpotifyClient(FakeSpotify(), sleep=NO_SLEEP)
+    songs = c.search_songs("q")
+    assert [s.video_id for s in songs] == ["spotify:track:a"]  # no-uri result dropped
+    assert songs[0].duration_s == 200  # 200000 ms -> 200 s
+    assert songs[0].is_song is True
+    assert c.search_videos("q") == []  # Spotify has no video axis
+
+
+def test_spotify_album_candidates():
+    cands = SpotifyClient(FakeSpotify(), sleep=NO_SLEEP).album_candidates("Band", "Greatest")
+    assert [c.video_id for c in cands] == ["spotify:track:t1"]
+    assert cands[0].album == "Greatest"
+    assert cands[0].duration_s == 180
+
+
+def test_spotify_get_or_create_playlist_uses_cache_then_creates():
+    sp = FakeSpotify()
+    c = SpotifyClient(sp, sleep=NO_SLEEP)
+    assert c.get_or_create_playlist("One") == "p1"  # existing, matched by name
+    assert c.get_or_create_playlist("Brand New") == "newpl"  # created
+    assert sp.created == [("ian", "Brand New")]
+    assert c.get_or_create_playlist("Brand New") == "newpl"  # cached, no second create
+    assert sp.created == [("ian", "Brand New")]
+
+
+def test_spotify_add_playlist_items_dedups_internally():
+    sp = FakeSpotify()
+    c = SpotifyClient(sp, sleep=NO_SLEEP)
+    # p1 already contains spotify:track:a and :b (from the playlist_items fake).
+    mapping = c.add_playlist_items("p1", ["spotify:track:a", "spotify:track:new"])
+    assert mapping == {
+        "spotify:track:a": None,
+        "spotify:track:new": None,
+    }  # no setVideoId on Spotify
+    assert sp.added == [("p1", ["spotify:track:new"])]  # the already-present uri filtered out
+
+
+def test_spotify_like_song_and_album():
+    sp = FakeSpotify()
+    c = SpotifyClient(sp, sleep=NO_SLEEP)
+    c.like_song("spotify:track:z")
+    assert sp.liked_tracks == ["spotify:track:z"]
+    assert c.like_album("Band", "Greatest") == "al1"
+    assert sp.saved_albums == ["al1"]
+
+
+@pytest.mark.parametrize(
+    ("artist", "album"),
+    [("Someone Else", "Greatest"), ("Band", "Greatest Vol. 2"), ("Band", "Other")],
+)
+def test_spotify_like_album_saves_nothing_without_a_match(artist, album):
+    sp = FakeSpotify()
+    assert SpotifyClient(sp, sleep=NO_SLEEP).like_album(artist, album) is None
+    assert sp.saved_albums == []
+
+
 # --------------------------------------------------------------------------- #
 # YouTube Music
 # --------------------------------------------------------------------------- #
@@ -127,13 +277,30 @@ class FakeYT:
         ]
 
     def get_playlist(self, playlistId, limit=100, **kw):
-        return {"tracks": [{"videoId": "v1"}, {"videoId": "v2"}, {"videoId": None}]}
+        return {
+            "tracks": [
+                {
+                    "videoId": "v1",
+                    "title": "Song A",
+                    "artists": [{"name": "Artist A"}],
+                    "album": {"name": "Album"},
+                    "duration_seconds": 200,
+                },
+                {"videoId": "v2", "title": "Song B", "artists": [{"name": "Artist B"}]},
+                {"videoId": None, "title": "Unavailable"},  # dropped
+            ]
+        }
 
     def get_liked_songs(self, limit=100):
-        return {"tracks": [{"videoId": "lk1"}, {"videoId": "lk2"}]}
+        return {
+            "tracks": [
+                {"videoId": "lk1", "title": "Liked 1", "artists": [{"name": "L1"}]},
+                {"videoId": "lk2", "title": "Liked 2", "artists": [{"name": "L2"}]},
+            ]
+        }
 
     def get_library_albums(self, limit=25, order=None):
-        return [{"title": "Greatest", "artists": [{"name": "Band"}]}]
+        return [{"browseId": "MPREab", "title": "Greatest", "artists": [{"name": "Band"}]}]
 
     def search(self, query, filter=None, limit=20, **kw):
         if filter == "songs":
@@ -194,11 +361,37 @@ def test_yt_list_playlists_filters_liked_music_and_parses_count():
     assert pls[0].count == 1234
 
 
-def test_yt_present_ids():
+def test_yt_present_candidates():
     c = YTMusicClient(FakeYT(), sleep=NO_SLEEP)
-    assert c.playlist_video_ids("yt1") == {"v1", "v2"}
-    assert c.liked_video_ids() == {"lk1", "lk2"}
-    assert c.library_album_keys() == {("band", "greatest")}
+    # None videoId dropped; duration_seconds parsed, and None when absent.
+    tracks = c.present_playlist_candidates("yt1")
+    assert [(t.video_id, t.title, t.artist, t.duration_s) for t in tracks] == [
+        ("v1", "Song A", "Artist A", 200),
+        ("v2", "Song B", "Artist B", None),
+    ]
+    assert [t.video_id for t in c.present_liked_candidates()] == ["lk1", "lk2"]
+    assert c.present_album_keys() == {("band", "greatest")}
+
+
+def test_yt_find_playlist_id_has_no_side_effects():
+    fake = FakeYT()
+    c = YTMusicClient(fake, sleep=NO_SLEEP)
+    assert c.find_playlist_id("One") == "yt1"
+    assert c.find_playlist_id("Missing") is None
+    assert fake.created == []
+
+
+def test_yt_rich_reads_for_reverse_source():
+    c = YTMusicClient(FakeYT(), sleep=NO_SLEEP)
+    tracks = c.playlist_tracks("yt1")
+    assert [t.title for t in tracks] == ["Song A", "Song B"]  # None videoId dropped
+    assert tracks[0].yt_video_id == "v1"
+    assert tracks[0].duration_ms == 200_000  # duration_seconds * 1000
+    assert tracks[0].album == "Album"
+    liked = c.liked_songs()
+    assert [t.yt_video_id for t in liked] == ["lk1", "lk2"]
+    albums = c.liked_albums()
+    assert albums[0].id == "MPREab" and albums[0].name == "Greatest" and albums[0].artist == "Band"
 
 
 def test_yt_search_songs_and_videos():
@@ -250,6 +443,16 @@ def test_yt_like_song_and_album():
     browse = c.like_album("Band", "Greatest")
     assert browse == "MPRE1"
     assert yt.rated_playlists == ["OLAK5"]
+
+
+@pytest.mark.parametrize(
+    ("artist", "album"),
+    [("Someone Else", "Greatest"), ("Band", "Greatest Vol. 2"), ("Band", "Other")],
+)
+def test_yt_like_album_rates_nothing_without_a_match(artist, album):
+    yt = FakeYT()
+    assert YTMusicClient(yt, sleep=NO_SLEEP).like_album(artist, album) is None
+    assert yt.rated_playlists == []
 
 
 # --------------------------------------------------------------------------- #

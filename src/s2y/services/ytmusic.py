@@ -20,8 +20,8 @@ from typing import Any
 
 from ytmusicapi import LikeStatus
 
-from ..core.matching import _similarity, normalize_artist, normalize_title
-from ..core.models import RemotePlaylist, YtCandidate
+from ..core.matching import normalize_artist, normalize_title, same_album
+from ..core.models import RemoteAlbum, RemotePlaylist, SongInfo, YtCandidate
 from .base import ServiceError, first_artist, is_transient
 from .ratelimit import SleepFn, with_retry
 
@@ -91,26 +91,24 @@ class YTMusicClient:
             )
         return out
 
-    def playlist_video_ids(self, playlist_id: str) -> set[str]:
+    def present_playlist_candidates(self, playlist_id: str) -> list[YtCandidate]:
+        """Present playlist tracks with metadata (for content-based dedup)."""
         log.info("YouTube Music: reading existing items of playlist %s…", playlist_id)
         data = (
             self._call(lambda: self._yt.get_playlist(playlist_id, limit=_BIG), "get playlist") or {}
         )
-        ids = {t["videoId"] for t in data.get("tracks", []) or [] if t.get("videoId")}
-        log.info("YouTube Music: playlist %s already has %d items", playlist_id, len(ids))
-        return ids
+        return [c for c in (_candidate(t, is_song=True) for t in data.get("tracks") or []) if c]
 
-    def liked_video_ids(self) -> set[str]:
+    def present_liked_candidates(self) -> list[YtCandidate]:
+        """Present Liked Music with metadata (for content-based dedup)."""
         # This is the (often slow) "what do I already like on YT" fetch that runs
         # right after the Spotify count is known — log around it so it doesn't look
         # like a hang.
         log.info("YouTube Music: reading your existing likes…")
         data = self._call(lambda: self._yt.get_liked_songs(limit=_BIG), "get liked songs") or {}
-        ids = {t["videoId"] for t in data.get("tracks", []) or [] if t.get("videoId")}
-        log.info("YouTube Music: you already like %d songs there", len(ids))
-        return ids
+        return [c for c in (_candidate(t, is_song=True) for t in data.get("tracks") or []) if c]
 
-    def library_album_keys(self) -> set[tuple[str, str]]:
+    def present_album_keys(self) -> set[tuple[str, str]]:
         log.info("YouTube Music: reading your library albums…")
         raw = self._call(lambda: self._yt.get_library_albums(limit=_BIG), "library albums") or []
         keys: set[tuple[str, str]] = set()
@@ -119,6 +117,40 @@ class YTMusicClient:
             artist = first_artist(a.get("artists"))
             keys.add((normalize_artist(artist), normalize_title(title)))
         return keys
+
+    # ----- rich reads (source role: YouTube Music -> Spotify) --------------- #
+    def playlist_tracks(self, playlist_id: str) -> list[SongInfo]:
+        data = (
+            self._call(lambda: self._yt.get_playlist(playlist_id, limit=_BIG), "get playlist") or {}
+        )
+        tracks = [s for s in (_song(t) for t in data.get("tracks", []) or []) if s]
+        log.info("YouTube Music: playlist %s has %d tracks", playlist_id, len(tracks))
+        return tracks
+
+    def liked_songs(self) -> list[SongInfo]:
+        log.info("YouTube Music: reading your liked songs…")
+        data = self._call(lambda: self._yt.get_liked_songs(limit=_BIG), "get liked songs") or {}
+        songs = [s for s in (_song(t) for t in data.get("tracks", []) or []) if s]
+        log.info("YouTube Music: %d liked songs", len(songs))
+        return songs
+
+    def liked_albums(self) -> list[RemoteAlbum]:
+        log.info("YouTube Music: reading your library albums…")
+        raw = self._call(lambda: self._yt.get_library_albums(limit=_BIG), "library albums") or []
+        out: list[RemoteAlbum] = []
+        for a in raw:
+            aid = a.get("browseId") or a.get("playlistId")
+            if not aid:
+                continue
+            out.append(
+                RemoteAlbum(
+                    id=aid,
+                    name=a.get("title") or "",
+                    artist=first_artist(a.get("artists")),
+                )
+            )
+        log.info("YouTube Music: %d library albums", len(out))
+        return out
 
     # ----- catalogue search ------------------------------------------------- #
     def search_songs(self, query: str, *, limit: int = 6) -> list[YtCandidate]:
@@ -188,6 +220,9 @@ class YTMusicClient:
             self._name_to_id = {pl.name: pl.id for pl in self.list_playlists()}
         return self._name_to_id
 
+    def find_playlist_id(self, name: str) -> str | None:
+        return self._names().get(name)
+
     def get_or_create_playlist(self, name: str) -> str:
         cache = self._names()
         if name in cache:
@@ -195,7 +230,7 @@ class YTMusicClient:
         created = self._call(
             lambda: self._yt.create_playlist(
                 name,
-                "Synced from Spotify by s2y",
+                "Synced by s2y",
                 privacy_status="PRIVATE",
             )
         )
@@ -220,7 +255,6 @@ class YTMusicClient:
         albums = (
             self._call(lambda: self._yt.search(f"{album} {artist}", filter="albums", limit=3)) or []
         )
-        want = normalize_title(album)
         for a in albums[:3]:
             browse_id = a.get("browseId")
             if not browse_id:
@@ -229,7 +263,9 @@ class YTMusicClient:
                 full = self._call(lambda bid=browse_id: self._yt.get_album(bid))
             except Exception:
                 continue
-            if _similarity(want, normalize_title(full.get("title") or "")) < 0.6:
+            if not same_album(
+                album, artist, full.get("title") or "", first_artist(full.get("artists"))
+            ):
                 continue
             audio_pl = full.get("audioPlaylistId")
             if audio_pl:
@@ -241,6 +277,30 @@ class YTMusicClient:
 # --------------------------------------------------------------------------- #
 # Parsing helpers
 # --------------------------------------------------------------------------- #
+def _song(track: dict | None) -> SongInfo | None:
+    """Parse a ytmusicapi playlist/liked track dict into a :class:`SongInfo`.
+
+    Skips entries with no ``videoId`` or title (unavailable/region-locked tracks).
+    The video id is the song's *source* identifier for a reverse sync.
+    """
+    if not track:
+        return None
+    vid = track.get("videoId")
+    title = track.get("title")
+    if not vid or not title:
+        return None
+    album = track.get("album")
+    album_name = album.get("name", "") if isinstance(album, dict) else ""
+    dur = track.get("duration_seconds")
+    return SongInfo(
+        title=title,
+        artist=first_artist(track.get("artists")),
+        album=album_name or "",
+        duration_ms=None if dur is None else int(dur) * 1000,
+        yt_video_id=vid,
+    )
+
+
 def _candidate(result: dict, *, is_song: bool) -> YtCandidate | None:
     vid = result.get("videoId")
     if not vid:

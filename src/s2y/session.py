@@ -11,12 +11,27 @@ import time
 from .auth import spotify_pkce, ytmusic_auth
 from .config import Config, Paths
 from .core.engine import Engine
+from .core.models import FORWARD, REVERSE, Direction
 from .core.ports import Classifier
 from .services.ratelimit import SleepFn, interruptible_sleep
 from .services.spotify import SpotifyClient
 from .services.ytmusic import YTMusicClient
 from .store import connect
 from .store.repository import Repository
+
+
+def direction_from_config(config: Config) -> Direction:
+    """The single :class:`Direction` for a headless run (``both`` resolves to forward)."""
+    return REVERSE if config.sync.direction == "yt_to_spotify" else FORWARD
+
+
+def directions_for(config: Config) -> list[Direction]:
+    """The directions to run for ``config.sync.direction`` (``both`` = forward, reverse)."""
+    if config.sync.direction == "yt_to_spotify":
+        return [REVERSE]
+    if config.sync.direction == "both":
+        return [FORWARD, REVERSE]
+    return [FORWARD]
 
 
 def is_configured(config: Config, paths: Paths) -> bool:
@@ -56,6 +71,7 @@ def build_engine(
     config: Config,
     paths: Paths,
     *,
+    direction: Direction = FORWARD,
     sleep: SleepFn | None = None,
     stop: threading.Event | None = None,
     classifier: Classifier | None = None,
@@ -76,4 +92,13 @@ def build_engine(
     spotify = SpotifyClient(spotify_pkce.build_client(config, paths), sleep=sleep)
     ytmusic = YTMusicClient(ytmusic_auth.build_client(config, paths), sleep=sleep)
     repo = Repository(connect(paths.db))
-    return Engine(spotify, ytmusic, repo, config, sleep=sleep, stop=stop, classifier=classifier)
+    return Engine(
+        spotify,
+        ytmusic,
+        repo,
+        config,
+        direction=direction,
+        sleep=sleep,
+        stop=stop,
+        classifier=classifier,
+    )

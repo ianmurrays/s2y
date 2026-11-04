@@ -38,8 +38,9 @@ def test_resolve_quarantine_match_helper(repo: Repository):
     track = resolve_quarantine_match(
         repo,
         quarantine_id=qid,
-        spotify_uri="spotify:track:7",
-        yt_video_id="vz",
+        source_side="spotify",
+        source_uri="spotify:track:7",
+        target_id="vz",
         title="Wéird Tïtle",
         artist="Nobody",
         match_method="claude",

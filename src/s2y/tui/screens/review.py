@@ -19,8 +19,9 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Header, ProgressBar, Static
 
 from ...core.events import Advanced, ClassifyVerdictEvent, LogLine, PhaseStarted
-from ...core.models import ClassifyDecision
+from ...core.models import ClassifyDecision, Direction
 from ...core.resolve import resolve_quarantine_match
+from ...session import directions_for
 
 if TYPE_CHECKING:
     from ..app import S2YApp
@@ -113,8 +114,9 @@ class QuarantineScreen(Screen):
         resolve_quarantine_match(
             self.app.repo,
             quarantine_id=row["id"],
-            spotify_uri=row["source_uri"],
-            yt_video_id=best["video_id"],
+            source_side=row["source_side"],
+            source_uri=row["source_uri"],
+            target_id=best["video_id"],
             title=row["title"],
             artist=row["artist"],
             match_method="manual",
@@ -166,13 +168,24 @@ class QuarantineScreen(Screen):
 
     @work
     async def run_classify(self) -> None:
-        try:
-            # Build/resolve the engine INSIDE the thread (it opens the DB + clients).
-            stats = await run_detached(lambda: self.app.engine().classify_quarantine(self._emit))
-        except Exception as exc:  # noqa: BLE001
-            self.post_message(WorkerFailed("classify", str(exc)))
-            return
-        self.post_message(ClassifyDone(stats))
+        # Each engine judges only its own source side (the judge re-searches that
+        # direction's target catalogue), so cover every configured direction — a
+        # "both ways" config has quarantines on both sides.
+        totals = {"considered": 0, "accepted": 0, "rejected": 0, "uncertain": 0, "applied": 0}
+        for d in directions_for(self.app.config):
+
+            def _classify(direction: Direction = d) -> dict:
+                # Build/resolve the engine INSIDE the thread (it opens the DB + clients).
+                return self.app.make_engine(direction).classify_quarantine(self._emit)
+
+            try:
+                stats = await run_detached(_classify)
+            except Exception as exc:  # noqa: BLE001
+                self.post_message(WorkerFailed("classify", str(exc)))
+                return
+            for k in totals:
+                totals[k] += stats.get(k, 0)
+        self.post_message(ClassifyDone(totals))
 
     def on_engine_event(self, message: EngineEvent) -> None:
         event = message.event

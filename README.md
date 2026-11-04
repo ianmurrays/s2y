@@ -5,18 +5,19 @@
 A terminal UI (TUI) for syncing your music library **between Spotify and YouTube
 Music** — playlists, Liked Songs, and Liked Albums.
 
-Built for migrating away from Spotify while keeping a sync running. **v1 ships a
-polished, accurate, _idempotent_ one-way Spotify → YouTube Music import** on top
-of a persistent sync engine; reverse-read and full two-way sync are planned for
-later phases.
+Built for migrating between services while keeping a sync running. **It ships a
+polished, accurate, _idempotent_ adds-only sync in either direction** — Spotify →
+YouTube Music, YouTube Music → Spotify, or **both ways** — on top of a persistent
+sync engine. Pick the direction per run on the dashboard (`x` cycles) or set a
+default in config. Full two-way sync *with deletes* is a later phase.
 
 It is a fresh implementation: a pure, testable sync engine with a persistent
 SQLite cross-service identity map, confidence-scored track matching with a
 human-review quarantine, dry-run, an optional LLM judge, and a
 [Textual](https://textual.textualize.io/) UI.
 
-> **Status:** early development (`0.1.0`). The Spotify side is read-only in v1;
-> nothing is ever deleted from either service.
+> **Status:** early development (`0.1.0`). Adds-only in both directions —
+> **nothing is ever deleted** from either service.
 
 ## Inspiration & attribution
 
@@ -41,6 +42,9 @@ Firefox "Copy Request Headers" and Chrome "Copy as cURL", an idea from the same 
   either service.
 - **Optional LLM judge:** an opt-in `claude -p` pass re-searches YouTube Music for
   each quarantined track and auto-resolves only the matches it's confident about.
+- **Either direction, or both:** Spotify → YouTube Music, YouTube Music → Spotify,
+  or a "both ways" run that converges the two libraries to their union. A round-trip
+  never echoes or creates duplicates.
 - **Adds-only (`union`) policy:** a track present on the source is added to the
   destination; **nothing is ever removed automatically.**
 
@@ -124,12 +128,21 @@ rejects hallucinated or misindexed ids, and every failure (timeout, bad output,
 non-zero exit) becomes `UNCERTAIN` and stays quarantined. It uses your existing
 `claude` login — no API key required.
 
-**Idempotency & resume.** A `track_map` caches every Spotify-URI → `videoId` so
-matches are never recomputed; each collection stores a **signature** (Spotify's
-`snapshot_id` for playlists, a hash of the id set for Liked Songs/Albums) for cheap
-change-detection. On partial failure the YouTube playlist id is still persisted (so
-the next run dedupes against what already landed) but the signature is **withheld**,
-so the collection is reprocessed and failed adds retry.
+**Idempotency & resume.** An identity cache records every source id → target id so
+matches are never recomputed (`track_map` for forward, a separate `reverse_map`
+keyed on the YouTube videoId for reverse — so reverse never clobbers a forward
+mapping). Each collection stores a per-direction **signature** (Spotify's
+`snapshot_id` for playlists, else a hash of the id set) for cheap change-detection.
+On partial failure the target playlist id is still persisted (so the next run dedupes
+against what already landed) but the signature is **withheld**, so the collection is
+reprocessed and failed adds retry. A round-trip (forward → reverse → forward) is
+provably damped — no echo, no duplicate adds.
+
+**Already there.** A song already in the target collection under a different release
+id isn't added again. Only the same recording counts: equal title once edition tags
+are stripped, matching duration and matching artist, so a live cut or remix is still
+added. If a target collection can't be read, it is skipped for that run and retried on
+the next one.
 
 ## Configuration
 
@@ -158,7 +171,8 @@ redirect_uri = ""               # blank = loopback; set for a tunnel/HTTPS redir
 auth_mode = "browser"           # "browser" | "oauth"
 
 [sync]
-conflict_policy = "union"       # v1 supports "union" (adds-only) only
+direction = "spotify_to_yt"     # "spotify_to_yt" | "yt_to_spotify" | "both"
+conflict_policy = "union"       # "union" (adds-only); deletes are a later phase
 track_sleep = 0.1               # per-track pacing (seconds)
 circuit_breaker_pct = 30        # reserved for the two-way phase
 request_timeout = 15.0
@@ -167,7 +181,8 @@ request_timeout = 15.0
 sync_playlists = true
 sync_liked_songs = true
 sync_liked_albums = true
-selected_playlists = []         # [] = all; otherwise an allow-list of Spotify ids
+selected_playlists = []         # [] = all; otherwise an allow-list of Spotify ids (forward)
+selected_yt_playlists = []      # [] = all; otherwise an allow-list of YouTube ids (reverse)
 
 [classify]                      # the opt-in LLM judge (off by default)
 enabled = false

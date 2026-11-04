@@ -19,20 +19,35 @@ from ...core.events import (
     PhaseStarted,
     TrackMatched,
 )
-from ...core.models import CollectionKind, MatchMethod, MatchOutcome, OpKind, SyncPlan
+from ...core.models import CollectionKind, Direction, MatchMethod, MatchOutcome, OpKind, SyncPlan
 from .. import log_bridge
+from ..labels import target_label
 from ..messages import ApplyDone, EngineEvent, LogMessage, PlanReady, WorkerFailed
 from ..threads import run_detached
 
 if TYPE_CHECKING:
     from ..app import S2YApp
 
-# How an AUTO match will be applied, by the collection it came from.
+# How an AUTO match will be applied, by the collection it came from. The verbs read
+# naturally for either target service ("like" / "save album" on Spotify too).
 _ADD_VERB = {
     CollectionKind.PLAYLIST: "add to playlist",
     CollectionKind.LIKED_SONGS: "like",
     CollectionKind.LIKED_ALBUMS: "save album",
 }
+
+
+def _merge_plans(runs: list[tuple[Direction, SyncPlan]]) -> SyncPlan:
+    """Combine each direction's plan into one for the summary line + apply gate."""
+    merged = SyncPlan()
+    for _direction, plan in runs:
+        merged.ops += plan.ops
+        merged.quarantine += plan.quarantine
+        merged.matches += plan.matches
+        merged.skipped += plan.skipped
+        merged.present += plan.present
+        merged.degraded += plan.degraded
+    return merged
 
 
 class SyncScreen(Screen):
@@ -45,10 +60,12 @@ class SyncScreen(Screen):
         ("l", "toggle_log", "Logs"),
     ]
 
-    def __init__(self, *, dry_run: bool) -> None:
+    def __init__(self, *, dry_run: bool, directions: list[Direction]) -> None:
         super().__init__()
         self.dry_run = dry_run
-        self._plan: SyncPlan | None = None
+        self._directions = directions
+        self._runs: list[tuple[Direction, SyncPlan]] = []  # (direction, its plan), for apply
+        self._plan: SyncPlan | None = None  # the merged plan, for the summary/gate
         self._apply_ready = False  # gates the Apply action (and its footer hint)
         self.apply_stats: dict | None = None  # set when an apply completes
         self._log_handler: log_bridge.TextualLogHandler | None = None
@@ -66,7 +83,12 @@ class SyncScreen(Screen):
             yield Static("Building plan…", id="phase")
             yield ProgressBar(total=None, show_eta=False, id="bar")
             table: DataTable[Any] = DataTable(id="rows")
-            table.add_columns("Source", "→ YouTube Music", "Where", "Conf", "Action")
+            match_col = (
+                f"→ {target_label(self._directions[0])}"
+                if len(self._directions) == 1
+                else "→ Match"
+            )
+            table.add_columns("Source", match_col, "Where", "Conf", "Action")
             yield table
             yield Static("", id="summary")
             # Live log panel — hidden until toggled with `l`. Streams the same
@@ -99,28 +121,45 @@ class SyncScreen(Screen):
     # ----- workers ---------------------------------------------------------- #
     @work
     async def run_plan(self) -> None:
-        try:
-            # Resolve (and lazily build) the engine INSIDE the thread — building it
-            # opens the DB and the API clients, which would block the UI thread.
-            plan = await run_detached(
-                lambda: self.app.engine().build_plan(self._emit, persist_matches=not self.dry_run)
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.post_message(WorkerFailed("plan", str(exc)))
-            return
-        self.post_message(PlanReady(plan))
+        # Build each chosen direction's plan in turn. The engine for a direction is
+        # built INSIDE the thread (it opens the DB + API clients, which would block
+        # the UI thread). Events from each direction stream into the same table.
+        runs: list[tuple[Direction, SyncPlan]] = []
+        for d in self._directions:
+            # Awaited within the iteration, so capturing `d` directly is safe (it
+            # can't change before the detached work runs).
+            def _build(direction: Direction = d) -> SyncPlan:
+                return self.app.make_engine(direction).build_plan(
+                    self._emit, persist_matches=not self.dry_run
+                )
+
+            try:
+                plan = await run_detached(_build)
+            except Exception as exc:  # noqa: BLE001
+                self.post_message(WorkerFailed("plan", str(exc)))
+                return
+            runs.append((d, plan))
+        self._runs = runs
+        self.post_message(PlanReady(_merge_plans(runs)))
 
     @work
     async def run_apply(self) -> None:
-        plan = self._plan
-        if plan is None:  # Apply is gated on a ready plan; guard defensively anyway
+        if not self._runs:  # Apply is gated on ready plans; guard defensively anyway
             return
-        try:
-            stats = await run_detached(lambda: self.app.engine().apply_plan(plan, self._emit))
-        except Exception as exc:  # noqa: BLE001
-            self.post_message(WorkerFailed("apply", str(exc)))
-            return
-        self.post_message(ApplyDone(stats))
+        totals = {"applied": 0, "failed": 0, "quarantined": 0, "skipped": 0}
+        for d, plan in self._runs:
+
+            def _apply(direction: Direction = d, plan: SyncPlan = plan) -> dict:
+                return self.app.make_engine(direction).apply_plan(plan, self._emit)
+
+            try:
+                stats = await run_detached(_apply)
+            except Exception as exc:  # noqa: BLE001
+                self.post_message(WorkerFailed("apply", str(exc)))
+                return
+            for k in totals:
+                totals[k] += stats.get(k, 0)
+        self.post_message(ApplyDone(totals))
 
     # ----- engine events ---------------------------------------------------- #
     def on_engine_event(self, message: EngineEvent) -> None:
@@ -138,8 +177,8 @@ class SyncScreen(Screen):
             self.query_one("#phase", Static).update(f"Unchanged: {event.name}")
         elif isinstance(event, DedupDegraded):
             self.query_one("#log", RichLog).write(
-                f"⚠ {event.name}: live YouTube check failed — resuming from saved "
-                f"state. {event.detail}"
+                f"⚠ {event.name}: could not read the target — skipped this run, it "
+                f"will retry next run. {event.detail}"
             )
         elif isinstance(event, TrackMatched):
             self._matched += 1
@@ -150,7 +189,7 @@ class SyncScreen(Screen):
             self.query_one("#phase", Static).update(
                 f"Planning: {self._coll_name} ({self._matched}/{self._total}{extra})"
             )
-            self._add_row(event.result)
+            self._add_row(event.result, event.present)
         elif isinstance(event, PhaseStarted) and event.phase == "apply":
             self.query_one("#phase", Static).update("Applying…")
             self.query_one("#bar", ProgressBar).update(total=event.total or None, progress=0)
@@ -162,7 +201,7 @@ class SyncScreen(Screen):
     def on_log_message(self, message: LogMessage) -> None:
         self.query_one("#log", RichLog).write(message.text)
 
-    def _add_row(self, result) -> None:
+    def _add_row(self, result, present: bool) -> None:
         table = self.query_one("#rows", DataTable)
         matched = result.best.title if result.best else "—"
         where = self._coll_name or "—"
@@ -171,7 +210,7 @@ class SyncScreen(Screen):
             matched,
             where,
             f"{result.confidence:.2f}",
-            self._action_label(result.outcome),
+            "already there" if present else self._action_label(result.outcome),
         )
 
     def _action_label(self, outcome: MatchOutcome) -> str:
@@ -195,7 +234,11 @@ class SyncScreen(Screen):
         if creates:
             parts.append(f"{creates} new playlist{'s' if creates != 1 else ''}")
         parts.append(f"{len(plan.quarantine)} need review")
+        if plan.present:
+            parts.append(f"{plan.present} already there")
         parts.append(f"{plan.skipped} unchanged")
+        if plan.degraded:
+            parts.append(f"{len(plan.degraded)} skipped (target unreadable)")
         self.query_one("#summary", Static).update(" · ".join(parts))
         self._apply_ready = not self.dry_run and bool(plan.ops)
         self.refresh_bindings()  # re-evaluate check_action so the footer shows/hides "Apply"

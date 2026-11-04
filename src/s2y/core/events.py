@@ -45,8 +45,9 @@ class CollectionSkipped:
 
 @dataclass(frozen=True)
 class DedupDegraded:
-    """A live YouTube dedup read failed (e.g. session signed out); planning fell
-    back to the locally-persisted membership ledger instead of aborting the run."""
+    """A live target dedup read failed (e.g. session signed out). Without it we cannot
+    tell a new track from one present under another id, so the collection is skipped
+    this run (no signature stored, so the next run retries) instead of aborting."""
 
     name: str
     detail: str = ""
@@ -57,6 +58,7 @@ class TrackMatched:
     """One source track was resolved (or quarantined) during planning."""
 
     result: MatchResult
+    present: bool = False  # already on the target, so no op will be emitted for it
 
 
 @dataclass(frozen=True)
