@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+from dataclasses import replace
 
 from ..config import Config
 from ..store.repository import Repository
@@ -211,6 +212,10 @@ def _plan_track_collection(
             on_event(TrackMatched(res))
             plan.quarantine.append(res)
             continue
+        # A cache hit only knows the normalized *source* title; show the target's real
+        # title when the live read has it (display only — nothing persists res.best).
+        if res.method is MatchMethod.CACHED and (live := present_index.by_id.get(vid)):
+            res = replace(res, best=live)
         on_event(TrackMatched(res, present=vid in present))
         plan.matches.append(res)
         if vid in present:
