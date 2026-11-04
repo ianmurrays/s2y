@@ -727,3 +727,17 @@ def test_make_engine_restores_default_direction_and_uncaches():
     # or a later plain engine()/classify would silently inherit the last run's side.
     assert app._pending_direction == FORWARD  # restored to config default  # noqa: SLF001
     assert app._engine is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_setup_rerun_unlocks_finish_with_saved_creds(monkeypatch):
+    from textual.widgets import Button
+
+    from s2y.tui.screens import setup
+
+    monkeypatch.setattr(setup.spotify_pkce, "has_cached_token", lambda *a: True)
+    monkeypatch.setattr(setup.ytmusic_auth, "has_credentials", lambda *a: True)
+    app = make_app(configured=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.screen.query_one("#finish", Button).disabled is False

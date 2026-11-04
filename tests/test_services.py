@@ -691,3 +691,14 @@ def test_yt_call_translates_signed_out_into_service_error():
     with pytest.raises(ServiceError, match="signed out"):
         c._call(signed_out, "get liked songs")  # noqa: SLF001
     assert calls["n"] == 1  # surfaced immediately, not retried for minutes
+
+
+def test_yt_call_treats_anonymous_browse_as_signed_out():
+    # Expired cookies on a private playlist: no sign-in text, just logged_in=0.
+    def anonymous():
+        raise KeyError(
+            "Unable to find 'contents' ... {'key': 'logged_in', 'value': '0'} ..."
+        )
+
+    with pytest.raises(ServiceError, match="signed out"):
+        YTMusicClient(FakeYT(), sleep=NO_SLEEP)._call(anonymous, "get playlist")  # noqa: SLF001

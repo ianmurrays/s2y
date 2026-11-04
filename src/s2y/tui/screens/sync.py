@@ -69,6 +69,7 @@ class SyncScreen(Screen):
         self._apply_ready = False  # gates the Apply action (and its footer hint)
         self.apply_stats: dict | None = None  # set when an apply completes
         self._log_handler: log_bridge.TextualLogHandler | None = None
+        self._signed_out_warned = False  # one toast per run, not one per collection
         self._coll_name = ""  # active collection (for the per-track counter + "Where")
         self._coll_kind: CollectionKind | None = None  # active collection kind
         self._total = 0  # tracks in the active collection
@@ -176,6 +177,15 @@ class SyncScreen(Screen):
         elif isinstance(event, CollectionSkipped):
             self.query_one("#phase", Static).update(f"Unchanged: {event.name}")
         elif isinstance(event, DedupDegraded):
+            if "signed out" in event.detail.lower() and not self._signed_out_warned:
+                self._signed_out_warned = True
+                self.app.notify(
+                    "YouTube Music credentials expired. Re-run setup from Settings "
+                    "and paste fresh headers.",
+                    title="YouTube Music signed out",
+                    severity="error",
+                    timeout=30,
+                )
             self.query_one("#log", RichLog).write(
                 f"⚠ {event.name}: could not read the target — skipped this run, it "
                 f"will retry next run. {event.detail}"

@@ -35,7 +35,14 @@ _LIKED_MUSIC_IDS = {"LM", "LM2"}
 # Markers that mean YouTube Music handed us a logged-out "please sign in" page
 # (ytmusicapi then fails to parse it). Browser-header sessions expire, so this is
 # the most common real failure — surface it as actionable instead of a parse dump.
-_SIGNED_OUT_MARKERS = ("signinendpoint", "sign in to listen", "looking for what you")
+# The last one is the responseContext of an anonymous browse (e.g. get_playlist on
+# a private playlist with expired cookies), which has no sign-in text at all.
+_SIGNED_OUT_MARKERS = (
+    "signinendpoint",
+    "sign in to listen",
+    "looking for what you",
+    "'logged_in', 'value': '0'",
+)
 _SIGNED_OUT_MSG = (
     "YouTube Music is signed out — it returned a 'Sign in' page instead of your "
     "library. Reconnect it: re-run setup (or Settings) and paste fresh request "
