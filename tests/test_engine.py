@@ -740,3 +740,19 @@ def test_non_latin_album_is_not_skipped_as_present(repo, config):
     plan = Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan()
     albums = [op.note for op in plan.ops if op.kind is OpKind.ADD_LIBRARY_ALBUM]
     assert albums == ["al2", "al3"]
+
+
+def test_cached_present_track_shows_target_title(repo, config):
+    from s2y.core.events import TrackMatched
+
+    spotify, yt = make_world()
+    eng = Engine(spotify, yt, repo, config, sleep=NO_SLEEP)
+    eng.apply_plan(eng.build_plan())
+
+    spotify._playlists = [RemotePlaylist(id="sp1", name="Chill", count=2, snapshot_id="snap-2")]
+    events: list = []
+    Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan(events.append)
+    shown = {e.result.best.title for e in events if isinstance(e, TrackMatched) and e.present}
+    # The live target title, not the cache's normalized "blinding lights".
+    assert yt.catalog["Blinding Lights"].title in shown
+    assert "blinding lights" not in shown

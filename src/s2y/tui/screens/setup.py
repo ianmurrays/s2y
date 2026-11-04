@@ -54,6 +54,8 @@ class SetupScreen(Screen):
 
     def __init__(self) -> None:
         super().__init__()
+        # Pre-seeded from saved creds on mount, so re-running setup to fix one service
+        # doesn't demand re-authorizing the other before Finish unlocks.
         self._sp_ok = False
         self._yt_ok = False
         self.auth_url: str | None = None  # last Spotify authorize URL shown
@@ -127,6 +129,14 @@ class SetupScreen(Screen):
             with Horizontal(id="setup_controls"):
                 yield Button("Finish", id="finish", variant="success", disabled=True)
         yield Footer()
+
+    def on_mount(self) -> None:
+        cfg, paths = self.app.config, self.app.paths
+        self._sp_ok = spotify_pkce.has_cached_token(cfg, paths)
+        self._yt_ok = ytmusic_auth.has_credentials(cfg, paths)
+        if self._sp_ok:
+            self.query_one("#sp_status", Static).update("[green]Already authorized[/]")
+        self.query_one("#finish", Button).disabled = not (self._sp_ok and self._yt_ok)
 
     # ----- Spotify ---------------------------------------------------------- #
     @on(Button.Pressed, "#sp_auth")

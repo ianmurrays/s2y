@@ -252,6 +252,7 @@ class PresentIndex:
         self, candidates: list[YtCandidate], *, duration_tol_s: int = DURATION_TOL_S
     ) -> None:
         self._tol = duration_tol_s
+        self.by_id = {c.video_id: c for c in candidates if c.video_id}
         self._by_title: dict[str, list[tuple[YtCandidate, str]]] = {}
         for c in candidates:
             title = _title_key(c.title)
