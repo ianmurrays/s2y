@@ -258,13 +258,36 @@ class YTMusicClient:
         self._call(lambda: self._yt.rate_song(video_id, LikeStatus.LIKE))
 
     def like_album(self, artist: str, album: str) -> str | None:
-        albums = (
-            self._call(lambda: self._yt.search(f"{album} {artist}", filter="albums", limit=3)) or []
+        query = f"{album} {artist}"
+        albums = self._call(lambda: self._yt.search(query, filter="albums", limit=3)) or []
+        hit = self._like_first_matching(artist, album, [a.get("browseId") for a in albums[:3]])
+        if hit:
+            return hit
+        # A single is often buried under covers in album search; a song search for it
+        # can still surface it, via the song's own album.
+        songs = self._call(lambda: self._yt.search(query, filter="songs", limit=5)) or []
+        hit = self._like_first_matching(
+            artist, album, [(s.get("album") or {}).get("id") for s in songs[:5]]
         )
-        for a in albums[:3]:
-            browse_id = a.get("browseId")
-            if not browse_id:
-                continue
+        if hit:
+            return hit
+        # YT often has no release for a Spotify single, only the song inside its parent
+        # album, so like the song whose title is the single's.
+        # ponytail: not limited to singles; a missing album with a same-named title track
+        # likes that track. Pass Spotify's album_type through if that bites.
+        for s in songs[:5]:
+            vid = s.get("videoId")
+            if vid and same_album(
+                album, artist, s.get("title") or "", first_artist(s.get("artists"))
+            ):
+                self.like_song(vid)
+                return vid
+        return None
+
+    def _like_first_matching(
+        self, artist: str, album: str, browse_ids: list[str | None]
+    ) -> str | None:
+        for browse_id in dict.fromkeys(b for b in browse_ids if b):
             try:
                 full = self._call(lambda bid=browse_id: self._yt.get_album(bid))
             except Exception:

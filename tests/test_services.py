@@ -464,6 +464,30 @@ def test_yt_like_album_rates_nothing_without_a_match(artist, album):
     assert yt.rated_playlists == []
 
 
+def test_yt_like_album_falls_back_to_a_songs_album():
+    # A single missing from album search (covers outrank it) is found via a song's album.
+    class SingleYT(FakeYT):
+        def search(self, query, filter=None, limit=20, **kw):
+            if filter == "albums":
+                return [{"browseId": "MPRE_COVER"}]
+            if filter == "songs":
+                return [{"videoId": "s1", "album": {"name": "Hit", "id": "MPRE_HIT"}}]
+            return []
+
+        def get_album(self, browseId):
+            if browseId == "MPRE_HIT":
+                return {
+                    "title": "Hit",
+                    "artists": [{"name": "Band"}],
+                    "audioPlaylistId": "OLAK_HIT",
+                }
+            return {"title": "Hit", "artists": [{"name": "Tribute"}], "audioPlaylistId": "OLAK_C"}
+
+    yt = SingleYT()
+    assert YTMusicClient(yt, sleep=NO_SLEEP).like_album("Band", "Hit") == "MPRE_HIT"
+    assert yt.rated_playlists == ["OLAK_HIT"]
+
+
 # --------------------------------------------------------------------------- #
 # Robustness: timeouts + visible retries
 # --------------------------------------------------------------------------- #
@@ -700,3 +724,28 @@ def test_yt_call_treats_anonymous_browse_as_signed_out():
 
     with pytest.raises(ServiceError, match="signed out"):
         YTMusicClient(FakeYT(), sleep=NO_SLEEP)._call(anonymous, "get playlist")  # noqa: SLF001
+
+
+def test_yt_like_album_likes_the_song_when_the_single_has_no_release():
+    # YT keeps "Hit" only inside the parent album "Big Album": like the song itself.
+    class ParentOnlyYT(FakeYT):
+        def search(self, query, filter=None, limit=20, **kw):
+            if filter == "songs":
+                return [
+                    {"videoId": "cover", "title": "Hit", "artists": [{"name": "Tribute"}]},
+                    {
+                        "videoId": "v_hit",
+                        "title": "Hit",
+                        "artists": [{"name": "Band"}],
+                        "album": {"name": "Big Album", "id": "MPRE_BIG"},
+                    },
+                ]
+            return []
+
+        def get_album(self, browseId):
+            return {"title": "Big Album", "artists": [{"name": "Band"}], "audioPlaylistId": "OLAK"}
+
+    yt = ParentOnlyYT()
+    assert YTMusicClient(yt, sleep=NO_SLEEP).like_album("Band", "Hit") == "v_hit"
+    assert yt.liked == ["v_hit"]
+    assert yt.rated_playlists == []
