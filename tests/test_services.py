@@ -488,6 +488,49 @@ def test_yt_like_album_falls_back_to_a_songs_album():
     assert yt.rated_playlists == ["OLAK_HIT"]
 
 
+def test_yt_like_album_never_likes_a_song_and_fetches_each_album_once():
+    # No matching release anywhere: like nothing (not the same-titled song), and don't
+    # re-fetch a browse id the song search returns again.
+    fetched: list[str] = []
+
+    class NoReleaseYT(FakeYT):
+        def search(self, query, filter=None, limit=20, **kw):
+            if filter == "albums":
+                return [{"browseId": "MPRE_BIG"}]
+            if filter == "songs":
+                return [
+                    {
+                        "videoId": "v_hit",
+                        "title": "Hit",
+                        "artists": [{"name": "Band"}],
+                        "album": {"name": "Big Album", "id": "MPRE_BIG"},
+                    }
+                ]
+            return []
+
+        def get_album(self, browseId):
+            fetched.append(browseId)
+            return {"title": "Big Album", "artists": [{"name": "Band"}], "audioPlaylistId": "OLAK"}
+
+    yt = NoReleaseYT()
+    assert YTMusicClient(yt, sleep=NO_SLEEP).like_album("Band", "Hit") is None
+    assert fetched == ["MPRE_BIG"]
+    assert yt.liked == []
+    assert yt.rated_playlists == []
+
+
+def test_yt_like_album_surfaces_signed_out():
+    class SignedOutYT(FakeYT):
+        def search(self, query, filter=None, limit=20, **kw):
+            return [{"browseId": "MPRE1"}] if filter == "albums" else []
+
+        def get_album(self, browseId):
+            raise KeyError("... {'key': 'logged_in', 'value': '0'} ...")
+
+    with pytest.raises(ServiceError, match="signed out"):
+        YTMusicClient(SignedOutYT(), sleep=NO_SLEEP).like_album("Band", "Greatest")
+
+
 # --------------------------------------------------------------------------- #
 # Robustness: timeouts + visible retries
 # --------------------------------------------------------------------------- #
@@ -724,28 +767,3 @@ def test_yt_call_treats_anonymous_browse_as_signed_out():
 
     with pytest.raises(ServiceError, match="signed out"):
         YTMusicClient(FakeYT(), sleep=NO_SLEEP)._call(anonymous, "get playlist")  # noqa: SLF001
-
-
-def test_yt_like_album_likes_the_song_when_the_single_has_no_release():
-    # YT keeps "Hit" only inside the parent album "Big Album": like the song itself.
-    class ParentOnlyYT(FakeYT):
-        def search(self, query, filter=None, limit=20, **kw):
-            if filter == "songs":
-                return [
-                    {"videoId": "cover", "title": "Hit", "artists": [{"name": "Tribute"}]},
-                    {
-                        "videoId": "v_hit",
-                        "title": "Hit",
-                        "artists": [{"name": "Band"}],
-                        "album": {"name": "Big Album", "id": "MPRE_BIG"},
-                    },
-                ]
-            return []
-
-        def get_album(self, browseId):
-            return {"title": "Big Album", "artists": [{"name": "Band"}], "audioPlaylistId": "OLAK"}
-
-    yt = ParentOnlyYT()
-    assert YTMusicClient(yt, sleep=NO_SLEEP).like_album("Band", "Hit") == "v_hit"
-    assert yt.liked == ["v_hit"]
-    assert yt.rated_playlists == []
