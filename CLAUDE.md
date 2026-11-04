@@ -115,6 +115,11 @@ src/s2y/
   resolve through the one `core/resolve.py` helper (so neither forgets
   `invalidate_signatures`). Uses the user's existing `claude` login (no `--bare`, no
   API key needed).
+- **Spotify singles:** a saved single (`album_type == "single"`, which includes EPs) carries its
+  tracks on `RemoteAlbum.tracks`; the planner sends them through the track matcher as
+  `LIKE_SONG` ops under the Liked Albums collection, not as a saved album (YT often has no
+  release for a single). So they land in YT Liked Music and, on a both-ways run, echo into
+  Spotify Liked Songs. Intended. The YT adapter's `like_album` only ever saves an album.
 - **union policy:** adds only — nothing is ever auto-deleted, in either direction.
   Running "both ways" converges the two libraries to their union; a round-trip
   (forward → reverse → forward) is provably damped (no echo / duplicate adds).
