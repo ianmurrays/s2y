@@ -15,11 +15,14 @@ confidence-scored matching with a human-review quarantine, dry-run, Textual UI.
 ```sh
 uv sync --extra dev        # install (Python 3.12, pinned in .python-version)
 uv run pytest -q           # run the test suite (fast, no network)
+uv run ruff format . && .githooks/pre-commit   # CI's lint + type jobs (hook: git config core.hooksPath .githooks)
 uv run s2y                 # launch the TUI
 uv run s2y --plan          # headless dry-run: print the plan, no UI, no changes
 uv run s2y --classify      # headless: claude -p LLM judge over the quarantine ([classify] enabled)
 uv build --wheel           # build (data files schema.sql + s2y.tcss are bundled)
 ```
+
+Logs (file only): `~/Library/Application Support/s2y/logs/s2y.log` (macOS; `Paths.log_file`). INFO by default; `s2y -v` or `S2Y_LOG_LEVEL=DEBUG` for per-track match lines.
 
 ## Architecture (hexagonal; dependencies point inward)
 
