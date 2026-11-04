@@ -140,3 +140,17 @@ reverse read — adds-only sync in either direction (and "both ways"), parameter
 by `Direction`.** Phase 3: two-way deletes behind tombstones + circuit-breaker (the
 `tombstone` table + `CircuitBreaker` already exist, unused) — also true incremental
 diff. Phase 4: scheduling, keyring, richer conflict UI.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `ianmurrays/s2y` (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root (created lazily). See `docs/agents/domain.md`.
