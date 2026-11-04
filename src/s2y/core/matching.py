@@ -144,6 +144,15 @@ def _title_key(title: str) -> str:
     return _word_key(_drop_edition_segments(_drop_edition_brackets(title or "")))
 
 
+def album_key(artist: str, title: str) -> tuple[str, str] | None:
+    """(artist, title) key for Liked Albums dedup; keeps non-Latin letters.
+
+    None when either part is empty, so an unkeyable album never counts as present.
+    """
+    key = (_word_key(artist), _title_key(title))
+    return key if all(key) else None
+
+
 def canonical_key(song: SongInfo) -> tuple[str, str]:
     """Stable (title, artist) key used for dedup and the track_map canon columns."""
     return normalize_title(song.title), normalize_artist(song.artist)

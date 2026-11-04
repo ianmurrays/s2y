@@ -127,6 +127,14 @@ def test_present_empty_index_returns_none():
     assert _present(_src("Blinding Lights", "The Weeknd", 200), []) is None
 
 
+def test_album_key():
+    assert matching.album_key("宇多田ヒカル", "初恋") == ("宇多田ヒカル", "初恋")
+    assert matching.album_key("歌手", "恋 2") != matching.album_key("歌手", "愛 2")
+    assert matching.album_key("Band", "Greatest (Remastered)") == ("band", "greatest")
+    assert matching.album_key("", "初恋") is None
+    assert matching.album_key("歌手", "") is None
+
+
 def test_same_album():
     assert matching.same_album(
         "Abbey Road", "The Beatles", "Abbey Road (Deluxe Edition)", "Beatles"

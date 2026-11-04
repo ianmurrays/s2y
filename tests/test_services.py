@@ -74,7 +74,12 @@ class FakeSpotify:
                 {
                     "added_at": "x",
                     "album": {"id": "al1", "name": "Greatest", "artists": [{"name": "Band"}]},
-                }
+                },
+                {
+                    "added_at": "x",
+                    "album": {"id": "al2", "name": "初恋", "artists": [{"name": "宇多田ヒカル"}]},
+                },
+                {"added_at": "x", "album": {"id": "al3", "name": "", "artists": []}},
             ],
             "next": None,
         }
@@ -183,7 +188,7 @@ def test_spotify_present_candidates():
     assert [(t.video_id, t.title, t.artist, t.duration_s) for t in liked] == [
         ("spotify:track:l", "Liked", "Lk", 200)
     ]
-    assert c.present_album_keys() == {("band", "greatest")}
+    assert c.present_album_keys() == {("band", "greatest"), ("宇多田ヒカル", "初恋")}
 
 
 def test_spotify_present_candidates_drops_episodes():
@@ -300,7 +305,11 @@ class FakeYT:
         }
 
     def get_library_albums(self, limit=25, order=None):
-        return [{"browseId": "MPREab", "title": "Greatest", "artists": [{"name": "Band"}]}]
+        return [
+            {"browseId": "MPREab", "title": "Greatest", "artists": [{"name": "Band"}]},
+            {"browseId": "MPREjp", "title": "初恋", "artists": [{"name": "宇多田ヒカル"}]},
+            {"browseId": "MPREno", "title": "", "artists": []},
+        ]
 
     def search(self, query, filter=None, limit=20, **kw):
         if filter == "songs":
@@ -370,7 +379,7 @@ def test_yt_present_candidates():
         ("v2", "Song B", "Artist B", None),
     ]
     assert [t.video_id for t in c.present_liked_candidates()] == ["lk1", "lk2"]
-    assert c.present_album_keys() == {("band", "greatest")}
+    assert c.present_album_keys() == {("band", "greatest"), ("宇多田ヒカル", "初恋")}
 
 
 def test_yt_find_playlist_id_has_no_side_effects():
