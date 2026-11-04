@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 
 from ..core.matching import album_key, same_album
@@ -111,11 +112,24 @@ class SpotifyClient:
             alb = (item or {}).get("album") or {}
             if not alb.get("id"):
                 continue
+            tracks: tuple[SongInfo, ...] = ()
+            if alb.get("album_type") == "single":
+                # ponytail: only the tracks embedded in the saved-album item (the first
+                # 50); singles are far shorter than that.
+                items = (alb.get("tracks") or {}).get("items") or []
+                tracks = tuple(
+                    replace(s, album=alb.get("name") or "")
+                    for s in (
+                        self._song({"track": t, "added_at": item.get("added_at")}) for t in items
+                    )
+                    if s
+                )
             out.append(
                 RemoteAlbum(
                     id=alb["id"],
                     name=alb.get("name") or "",
                     artist=first_artist(alb.get("artists")),
+                    tracks=tracks,
                 )
             )
         log.info("Spotify: %d Liked Albums", len(out))

@@ -455,6 +455,8 @@ def _plan_liked_albums(plan, source, target, repo, direction, on_event, stop=_NE
         plan.skipped += len(albums)
         return
     on_event(CollectionStarted("Liked Albums", CollectionKind.LIKED_ALBUMS, len(albums)))
+    singles = [t for a in albums for t in a.tracks]
+    albums = [a for a in albums if not a.tracks]
     present = target.present_album_keys()
     for alb in albums:
         if stop.is_set():
@@ -473,6 +475,32 @@ def _plan_liked_albums(plan, source, target, repo, direction, on_event, stop=_NE
                 note=alb.id,
             )
         )
+    if singles:
+        # Singles go through the track matcher as song likes; this also records the
+        # collection signature, under the same key as the albums.
+        live = _live_present(target.present_liked_candidates, "Liked Albums", plan, on_event)
+        if live is None:
+            return
+        persisted = repo.present_target_ids(direction.target.value, row.id) if row else set()
+        _plan_track_collection(
+            plan,
+            name="Liked Albums",
+            kind=CollectionKind.LIKED_ALBUMS,
+            key="liked_albums",
+            source_playlist_id=None,
+            sig=sig,
+            sources=singles,
+            present=persisted | {c.video_id for c in live},
+            present_index=matching.PresentIndex(live),
+            op_kind=OpKind.LIKE_SONG,
+            emit_create=False,
+            repo=repo,
+            target=target,
+            direction=direction,
+            on_event=on_event,
+            stop=stop,
+        )
+        return
     plan.collections.append(
         CollectionSig(
             key="liked_albums",

@@ -742,6 +742,27 @@ def test_non_latin_album_is_not_skipped_as_present(repo, config):
     assert albums == ["al2", "al3"]
 
 
+def test_single_is_liked_as_songs_not_saved_as_album(repo, config):
+    spotify, yt = make_world()
+    hit = SongInfo(
+        "Levitating", "Dua Lipa", "Levitating", duration_ms=203000, spotify_uri="spotify:track:s"
+    )
+    spotify._albums = [RemoteAlbum(id="al9", name="Levitating", artist="Dua Lipa", tracks=(hit,))]
+    config.collections.sync_playlists = False
+    config.collections.sync_liked_songs = False
+    eng = Engine(spotify, yt, repo, config, sleep=NO_SLEEP)
+    plan = eng.build_plan()
+    assert [(op.kind, op.video_id, op.collection) for op in plan.ops] == [
+        (OpKind.LIKE_SONG, "yv2", "Liked Albums")
+    ]
+    eng.apply_plan(plan)
+    assert yt.song_likes == ["yv2"]
+    assert yt.album_likes == []
+    # Replanning (signature cleared) finds the song already liked: no op.
+    repo.invalidate_signatures()
+    assert Engine(spotify, yt, repo, config, sleep=NO_SLEEP).build_plan().ops == []
+
+
 def test_cached_present_track_shows_target_title(repo, config):
     from s2y.core.events import TrackMatched
 

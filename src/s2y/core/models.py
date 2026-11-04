@@ -191,6 +191,9 @@ class RemoteAlbum:
     id: str
     name: str
     artist: str
+    # Set only for a Spotify single: the planner likes these songs in place of saving
+    # the release, which YouTube Music often doesn't have on its own.
+    tracks: tuple[SongInfo, ...] = ()
 
 
 class OpKind(StrEnum):

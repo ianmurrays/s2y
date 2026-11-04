@@ -173,6 +173,26 @@ def test_spotify_liked_songs_and_albums():
     albums = c.liked_albums()
     assert albums[0].name == "Greatest"
     assert albums[0].artist == "Band"
+    assert albums[0].tracks == ()  # not a single
+
+
+def test_spotify_liked_single_carries_its_tracks():
+    fake = FakeSpotify()
+    single = {
+        "id": "al9",
+        "name": "Hit",
+        "album_type": "single",
+        "artists": [{"name": "Band"}],
+        "tracks": {"items": [_track("Hit", "Band", "spotify:track:h")["track"]]},
+    }
+    fake.current_user_saved_albums = lambda limit=50: {
+        "items": [{"added_at": "x", "album": single}],
+        "next": None,
+    }
+    (alb,) = SpotifyClient(fake, sleep=NO_SLEEP).liked_albums()
+    assert [(t.title, t.spotify_uri, t.album) for t in alb.tracks] == [
+        ("Hit", "spotify:track:h", "Hit")
+    ]
 
 
 # ----- Spotify target role (reverse sync) ----- #
